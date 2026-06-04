@@ -115,8 +115,14 @@ async def handle_message(from_number: str, text: str, to_number: str, media_url:
             responses = {
                 "1": f"Wonderful! We are glad you are feeling better. 😊\n\nStay healthy!\n- {clinic_name}",
                 "2": f"We hope you feel better soon. 🙏\n\nPlease rest well and follow the diet instructions.\n- {clinic_name}",
-                "3": f"We will arrange an appointment for you. Our team will contact you shortly.\n- {clinic_name}"
+                # "3": f"We will arrange an appointment for you. Our team will contact you shortly.\n- {clinic_name}"
             }
+            if t == "3":
+                save_conversation_state(from_number, "idle", {})
+                return (
+                    f"No problem! Let us book an appointment for you. 🏥\n\n"
+                    + build_main_menu(patient_name, clinic_name)
+                )
             save_conversation_state(from_number, "idle", {})
             return responses.get(t, "Thank you for your response!")
 
