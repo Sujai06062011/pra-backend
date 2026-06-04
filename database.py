@@ -12,9 +12,11 @@ supabase: Client = create_client(
 
 def get_doctor_by_whatsapp(whatsapp_number: str):
     """Get doctor by WhatsApp number"""
+    # Remove + for DB lookup (stored without +)
+    clean_number = whatsapp_number.replace('+', '')
     result = supabase.table("doctors").select(
         "id, name, clinic_name, clinic_timings, clinic_address, mobile"
-    ).eq("whatsapp_number", whatsapp_number).execute()
+    ).eq("whatsapp_number", clean_number).execute()
     return result.data[0] if result.data else None
 
 
