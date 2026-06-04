@@ -513,36 +513,11 @@ async def handle_voice_followup_response(request: Request):
                 if mobile:
                     # Build booking prompt based on language
                     if patient_lang == "tamil":
-                        booking_msg = (
-                            f"வணக்கம் {patient_name}! 👋
-
-"
-                            f"{clinic_name} appointment பண்ண:
-
-"
-                            f"1 அழுத்தவும் - Appointment Book பண்ண"
-                        )
+                        booking_msg = "\u0bb5\u0ba3\u0b95\u0bcd\u0b95\u0bae\u0bcd " + patient_name + "!\n\n" + clinic_name + " appointment \u0baa\u0ba3\u0bcd\u0ba3:\n\n1 - Appointment Book \u0baa\u0ba3\u0bcd\u0ba3"
                     elif patient_lang == "hindi":
-                        booking_msg = (
-                            f"नमस्ते {patient_name}! 👋
-
-"
-                            f"{clinic_name} में appointment के लिए:
-
-"
-                            f"1 दबाएं - Appointment Book करें"
-                        )
+                        booking_msg = "\u0928\u092e\u0938\u094d\u0924\u0947 " + patient_name + "!\n\n" + clinic_name + " appointment \u0915\u0947 \u0932\u093f\u090f:\n\n1 - Appointment Book \u0915\u0930\u0947\u0902"
                     else:
-                        booking_msg = (
-                            f"Hello {patient_name}! 👋
-
-"
-                            f"Let us book your appointment at {clinic_name}.
-
-"
-                            f"Reply 1 to Book Appointment now."
-                        )
-
+                        booking_msg = "Hello " + patient_name + "!\n\nLet us book your appointment at " + clinic_name + ".\n\nReply 1 to Book Appointment now."
                     # Send WhatsApp
                     twilio_client.messages.create(
                         from_=TWILIO_FROM,
