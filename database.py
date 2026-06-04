@@ -11,12 +11,23 @@ supabase: Client = create_client(
 
 
 def get_doctor_by_whatsapp(whatsapp_number: str):
-    """Get doctor by WhatsApp number"""
-    # Remove + for DB lookup (stored without +)
-    clean_number = whatsapp_number.replace('+', '')
+    """Get doctor by WhatsApp number - handles both +14155238886 and 14155238886"""
+    # Normalize: remove + for consistent lookup
+    clean = whatsapp_number.replace('+', '')
+    
+    # Try without + first (most common storage format)
     result = supabase.table("doctors").select(
         "id, name, clinic_name, clinic_timings, clinic_address, mobile"
-    ).eq("whatsapp_number", clean_number).execute()
+    ).eq("whatsapp_number", clean).execute()
+    
+    if result.data:
+        return result.data[0]
+    
+    # Try with + (some may be stored with +)
+    result = supabase.table("doctors").select(
+        "id, name, clinic_name, clinic_timings, clinic_address, mobile"
+    ).eq("whatsapp_number", whatsapp_number).execute()
+    
     return result.data[0] if result.data else None
 
 
