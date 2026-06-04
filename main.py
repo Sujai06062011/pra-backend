@@ -6,6 +6,8 @@ from dotenv import load_dotenv
 import os
 from whatsapp_handler import handle_message
 from scheduler import init_scheduler
+from followup import prewarm_response_audios
+
 
 load_dotenv()
 
@@ -29,7 +31,7 @@ async def startup_event():
     await prewarm_response_audios()
     
     print("🚀 PRA Backend started with scheduler")
-    
+
 def send_whatsapp(to_number: str, message: str):
     try:
         msg = twilio_client.messages.create(
