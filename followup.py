@@ -412,6 +412,7 @@ async def handle_voice_followup_webhook(request: Request):
     params = dict(request.query_params)
     pres_id = params.get("pres_id", "")
     audio_url = params.get("audio_url", "")
+    lang = params.get("lang", "english")
 
     response = VoiceResponse()
     gather = Gather(
