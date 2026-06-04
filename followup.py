@@ -44,7 +44,8 @@ BUCKET_NAME = "clinic-audio"
 LANGUAGE_CONFIG = {
     "tamil": {
         "code": "ta-IN",
-        "speaker": "kavitha",
+        "speaker": "ritu",
+        "pace": 1.05,
         "script": (
             "வணக்கம் {name}! நான் {doctor} கிளினிக்கிலிருந்து பேசுகிறேன். "
             "உங்கள் மருந்து கோர்ஸ் முடிந்தது. "
@@ -64,7 +65,8 @@ LANGUAGE_CONFIG = {
     },
     "hindi": {
         "code": "hi-IN",
-        "speaker": "priya",
+        "speaker": "ritu",
+         "pace": 1.05,
         "script": (
             "नमस्ते {name}! मैं {doctor} क्लिनिक से बोल रही हूं। "
             "आपका दवाई का कोर्स पूरा हो गया है। "
@@ -85,6 +87,7 @@ LANGUAGE_CONFIG = {
     "english": {
         "code": "en-IN",
         "speaker": "ritu",
+         "pace": 1.05,
         "script": (
             "Hello {name}! This is a call from {doctor} Clinic. "
             "Your medicine course has been completed. "
@@ -106,7 +109,6 @@ LANGUAGE_CONFIG = {
 
 
 async def generate_sarvam_audio(text: str, language: str) -> bytes:
-    """Generate audio using Sarvam AI Bulbul v3"""
     config = LANGUAGE_CONFIG.get(language, LANGUAGE_CONFIG["english"])
 
     async with httpx.AsyncClient() as client:
@@ -122,7 +124,7 @@ async def generate_sarvam_audio(text: str, language: str) -> bytes:
                 "speaker": config["speaker"],
                 "model": "bulbul:v3",
                 "audio_format": "wav",
-                "pace": 0.9,
+                "pace": config.get("pace", 1.0),
                 "enable_preprocessing": True
             },
             timeout=30.0
@@ -453,6 +455,24 @@ RESPONSE_SCRIPTS = {
     }
 }
 
+async def prewarm_response_audios():
+    """
+    Pre-generate all response audios at startup.
+    6 files total - 3 languages x 2 responses.
+    Skips if already cached.
+    """
+    print("🔥 Pre-warming response audios...")
+    languages = ["english", "tamil", "hindi"]
+    digits = ["1", "2"]
+    
+    for lang in languages:
+        for digit in digits:
+            try:
+                await get_or_generate_response_audio(digit, lang)
+            except Exception as e:
+                print(f"❌ Pre-warm failed for {lang}/{digit}: {e}")
+    
+    print("✅ All response audios ready!")
 
 async def get_or_generate_response_audio(digit: str, language: str) -> str:
     """
