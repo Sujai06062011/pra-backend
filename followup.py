@@ -416,7 +416,7 @@ async def handle_voice_followup_webhook(request: Request):
     response = VoiceResponse()
     gather = Gather(
         num_digits=1,
-        action=f"{BASE_URL}/webhook/voice/followup-response?pres_id={pres_id}",
+        action=f"{BASE_URL}/webhook/voice/followup-response?pres_id={pres_id}&lang={lang}",
         method="POST",
         timeout=10
     )
@@ -436,8 +436,45 @@ async def handle_voice_followup_webhook(request: Request):
     return PlainTextResponse(str(response), media_type="application/xml")
 
 
+# Pre-generated response scripts - 6 files total, cached forever
+RESPONSE_SCRIPTS = {
+    "tamil": {
+        "1": "மிக்க மகிழ்ச்சி! நீங்கள் நலமாக இருக்கிறீர்கள் என்று தெரிந்து மகிழ்ச்சி. நன்றி. வணக்கம்!",
+        "2": "சரி! விரைவில் appointment ஏற்பாடு செய்கிறோம். நன்றி. வணக்கம்!"
+    },
+    "hindi": {
+        "1": "बहुत अच्छा! हमें खुशी है कि आप बेहतर हैं। धन्यवाद। नमस्ते!",
+        "2": "जल्द ही अपॉइंटमेंट बुक होगा। धन्यवाद। नमस्ते!"
+    },
+    "english": {
+        "1": "Wonderful! We are glad you are feeling better. Stay healthy. Goodbye!",
+        "2": "We will book your appointment shortly. Thank you. Goodbye!"
+    }
+}
+
+
+async def get_or_generate_response_audio(digit: str, language: str) -> str:
+    """
+    Get cached response audio or generate new one.
+    Only 6 files total - generated once, reused forever.
+    filename: response_{digit}_{language}.wav
+    """
+    file_path = f"response_{digit}_{language}.wav"
+    exists = await check_audio_exists(file_path)
+    if exists:
+        print(f"✅ Using cached response: {file_path}")
+        return f"{SUPABASE_URL}/storage/v1/object/public/{BUCKET_NAME}/{file_path}"
+
+    print(f"🎙️ Generating response audio: {file_path} (first time)...")
+    scripts = RESPONSE_SCRIPTS.get(language, RESPONSE_SCRIPTS["english"])
+    script = scripts.get(digit, "Thank you. Goodbye!")
+    audio_bytes = await generate_sarvam_audio(script, language)
+    audio_url = await upload_audio(audio_bytes, file_path)
+    return audio_url
+
+
 async def handle_voice_followup_response(request: Request):
-    """Handle patient keypress response"""
+    """Handle patient keypress - plays Sarvam cached response audio"""
     params = dict(request.query_params)
     pres_id = params.get("pres_id", "")
     lang = params.get("lang", "english")
@@ -457,28 +494,15 @@ async def handle_voice_followup_response(request: Request):
             "followup_replied": True
         }).eq("id", pres_id).execute()
 
-    # Language-aware responses
-    responses = {
-        "tamil": {
-            "1": "மிக்க மகிழ்ச்சி! நீங்கள் நலமாக இருக்கிறீர்கள் என்று தெரிந்து சந்தோஷம். நன்றி. வணக்கம்!",
-            "2": "உங்கள் அப்பாயின்ட்மென்ட் விரைவில் ஏற்பாடு செய்யப்படும். நன்றி. வணக்கம்!"
-        },
-        "hindi": {
-            "1": "बहुत अच्छा! हमें खुशी है कि आप बेहतर महसूस कर रहे हैं। धन्यवाद। नमस्ते!",
-            "2": "हम जल्द ही आपका अपॉइंटमेंट बुक करेंगे। धन्यवाद। नमस्ते!"
-        },
-        "english": {
-            "1": "Wonderful! We are glad you are feeling better. Take care and stay healthy. Goodbye!",
-            "2": "We will book an appointment for you shortly. Thank you. Goodbye!"
-        }
-    }
-
-    lang_responses = responses.get(lang, responses["english"])
-    message = lang_responses.get(digit, "Thank you for your time. Goodbye!")
-    lang_code = LANGUAGE_CONFIG.get(lang, LANGUAGE_CONFIG["english"])["code"]
+    # Get cached Sarvam response audio
+    valid_digits = ["1", "2"]
+    if digit in valid_digits:
+        audio_url = await get_or_generate_response_audio(digit, lang)
+    else:
+        audio_url = await get_or_generate_response_audio("1", lang)
 
     response = VoiceResponse()
-    response.say(message, language=lang_code)
+    response.play(audio_url)
 
     print(f"✅ Voice response: pres_id={pres_id}, lang={lang}, digit={digit}, response={followup_response}")
     return PlainTextResponse(str(response), media_type="application/xml")
