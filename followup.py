@@ -371,7 +371,7 @@ async def make_followup_call(pres: dict):
         call = twilio_client.calls.create(
             from_=TWILIO_VOICE_NUMBER,
             to=f"+{mobile}",
-            url=f"{BASE_URL}/webhook/voice/followup?pres_id={pres_id}&audio_url={audio_url}",
+            url=f"{BASE_URL}/webhook/voice/followup?pres_id={pres_id}&audio_url={audio_url}&lang={language}",
             timeout=30
         )
 
@@ -440,6 +440,7 @@ async def handle_voice_followup_response(request: Request):
     """Handle patient keypress response"""
     params = dict(request.query_params)
     pres_id = params.get("pres_id", "")
+    lang = params.get("lang", "english")
     form_data = await request.form()
     digit = form_data.get("Digits", "")
 
@@ -449,31 +450,35 @@ async def handle_voice_followup_response(request: Request):
     }
     followup_response = response_map.get(digit, "no_response")
 
+    # Save to DB
     if pres_id:
         supabase.table("prescriptions").update({
             "followup_call_response": followup_response,
             "followup_replied": True
         }).eq("id", pres_id).execute()
 
+    # Language-aware responses
+    responses = {
+        "tamil": {
+            "1": "மிக்க மகிழ்ச்சி! நீங்கள் நலமாக இருக்கிறீர்கள் என்று தெரிந்து சந்தோஷம். நன்றி. வணக்கம்!",
+            "2": "உங்கள் அப்பாயின்ட்மென்ட் விரைவில் ஏற்பாடு செய்யப்படும். நன்றி. வணக்கம்!"
+        },
+        "hindi": {
+            "1": "बहुत अच्छा! हमें खुशी है कि आप बेहतर महसूस कर रहे हैं। धन्यवाद। नमस्ते!",
+            "2": "हम जल्द ही आपका अपॉइंटमेंट बुक करेंगे। धन्यवाद। नमस्ते!"
+        },
+        "english": {
+            "1": "Wonderful! We are glad you are feeling better. Take care and stay healthy. Goodbye!",
+            "2": "We will book an appointment for you shortly. Thank you. Goodbye!"
+        }
+    }
+
+    lang_responses = responses.get(lang, responses["english"])
+    message = lang_responses.get(digit, "Thank you for your time. Goodbye!")
+    lang_code = LANGUAGE_CONFIG.get(lang, LANGUAGE_CONFIG["english"])["code"]
+
     response = VoiceResponse()
+    response.say(message, language=lang_code)
 
-    if digit == "1":
-        response.say(
-            "Wonderful! We are glad you are feeling better. "
-            "Take care and stay healthy. Goodbye!",
-            language="en-IN"
-        )
-    elif digit == "2":
-        response.say(
-            "We will have our team contact you shortly to book an appointment. "
-            "Thank you. Goodbye!",
-            language="en-IN"
-        )
-    else:
-        response.say(
-            "Thank you for your time. Stay healthy. Goodbye!",
-            language="en-IN"
-        )
-
-    print(f"✅ Voice response: pres_id={pres_id}, digit={digit}, response={followup_response}")
+    print(f"✅ Voice response: pres_id={pres_id}, lang={lang}, digit={digit}, response={followup_response}")
     return PlainTextResponse(str(response), media_type="application/xml")
