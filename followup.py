@@ -549,3 +549,23 @@ async def handle_voice_followup_response(request: Request):
 
     print(f"✅ Voice response: pres_id={pres_id}, lang={lang}, digit={digit}, response={followup_response}")
     return PlainTextResponse(str(response), media_type="application/xml")
+
+
+async def prewarm_response_audios():
+    """
+    Pre-generate all response audios at startup.
+    6 files total - 3 languages x 2 responses.
+    Skips if already cached.
+    """
+    print("🔥 Pre-warming response audios...")
+    languages = ["english", "tamil", "hindi"]
+    digits = ["1", "2"]
+
+    for lang in languages:
+        for digit in digits:
+            try:
+                await get_or_generate_response_audio(digit, lang)
+            except Exception as e:
+                print(f"❌ Pre-warm failed for {lang}/{digit}: {e}")
+
+    print("✅ All response audios ready!")
