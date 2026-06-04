@@ -21,6 +21,25 @@ twilio_client = Client(
 TWILIO_FROM = os.getenv("TWILIO_WHATSAPP_FROM")
 
 
+@app.post("/admin/onboard-clinic")
+async def onboard_clinic(request: Request):
+    data = await request.json()
+    
+    # Normalize WhatsApp number - always strip +
+    whatsapp = data.get("whatsapp_number", "").replace("+", "").strip()
+    
+    result = supabase.table("doctors").insert({
+        "name": data.get("doctor_name"),
+        "clinic_name": data.get("clinic_name"),
+        "whatsapp_number": whatsapp,  # always stored without +
+        "clinic_timings": data.get("timings", "Mon-Sat: 9AM-1PM, 5PM-8PM"),
+        "clinic_address": data.get("address", ""),
+        "email": data.get("email", ""),
+        "mobile": data.get("mobile", "")
+    }).execute()
+    
+    return {"status": "success", "doctor_id": result.data[0]["id"]}
+
 # In main.py - startup event
 @app.on_event("startup")
 async def startup_event():
