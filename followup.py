@@ -402,6 +402,30 @@ async def handle_voice_followup_response(request: Request):
     print(f"✅ Follow-up call response: pres_id={pres_id}, digit={digit}, response={followup_response}")
     return PlainTextResponse(str(response), media_type="application/xml")
 
+def has_pending_followup(mobile: str) -> bool:
+    """Check if patient has a pending follow-up reply"""
+    patient_result = supabase.table("patients").select(
+        "id"
+    ).eq("mobile", mobile).eq("family_head_mobile", mobile).execute()
+
+    if not patient_result.data:
+        # Try without family_head_mobile filter
+        patient_result = supabase.table("patients").select(
+            "id"
+        ).eq("mobile", mobile).is_("family_head_mobile", "null").execute()
+
+    if not patient_result.data:
+        return False
+
+    patient_id = patient_result.data[0]["id"]
+
+    result = supabase.table("prescriptions").select(
+        "id"
+    ).eq("patient_id", patient_id).eq(
+        "followup_whatsapp_sent", True
+    ).eq("followup_replied", False).execute()
+
+    return len(result.data) > 0
 
 def save_followup_reply(mobile: str, reply_text: str):
     """

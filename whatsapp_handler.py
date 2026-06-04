@@ -107,6 +107,18 @@ async def handle_message(from_number: str, text: str, to_number: str, media_url:
     if t in ["bye", "goodbye", "exit", "end", "quit"]:
         save_conversation_state(from_number, "idle", {})
         return f"Thank you for contacting {clinic_name}. 🙏\n\nStay healthy! Reply Hi anytime to start again."
+    
+    if current_state == "idle" and t in ["1", "2", "3"]:
+        from followup import save_followup_reply, has_pending_followup
+        if has_pending_followup(from_number):
+            save_followup_reply(from_number, t)
+            responses = {
+                "1": f"Wonderful! We are glad you are feeling better. 😊\n\nStay healthy!\n- {clinic_name}",
+                "2": f"We hope you feel better soon. 🙏\n\nPlease rest well and follow the diet instructions.\n- {clinic_name}",
+                "3": f"We will arrange an appointment for you. Our team will contact you shortly.\n- {clinic_name}"
+            }
+            save_conversation_state(from_number, "idle", {})
+            return responses.get(t, "Thank you for your response!")
 
     # ── INTENT DETECTION ─────────────────────────────────────
     # State-based intents FIRST before keyword matching
