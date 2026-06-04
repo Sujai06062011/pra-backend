@@ -115,3 +115,34 @@ async def trigger_review_requests():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
+
+# ── VOICE WEBHOOKS ────────────────────────────────────
+@app.get("/webhook/voice/followup")
+@app.post("/webhook/voice/followup")
+async def voice_followup(request: Request):
+    """Twilio voice webhook - plays follow-up audio"""
+    from followup import handle_voice_followup_webhook
+    return await handle_voice_followup_webhook(request)
+
+
+@app.post("/webhook/voice/followup-response")
+async def voice_followup_response(request: Request):
+    """Twilio voice webhook - handles keypress"""
+    from followup import handle_voice_followup_response
+    return await handle_voice_followup_response(request)
+
+
+# ── FOLLOW-UP TRIGGER ENDPOINTS ───────────────────────
+@app.post("/trigger/followup-whatsapp")
+async def trigger_followup_whatsapp():
+    from followup import send_followup_whatsapp_job
+    await send_followup_whatsapp_job()
+    return {"status": "Follow-up WhatsApp sent"}
+
+
+@app.post("/trigger/followup-calls")
+async def trigger_followup_calls():
+    from followup import make_followup_calls_job
+    await make_followup_calls_job()
+    return {"status": "Follow-up calls initiated"}

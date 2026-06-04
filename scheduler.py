@@ -332,46 +332,82 @@ def init_scheduler() -> AsyncIOScheduler:
     """Initialize and return the scheduler"""
     scheduler = AsyncIOScheduler(timezone="Asia/Kolkata")
 
-    # Morning reminder - 8:00 AM IST
+    # # Morning reminder - 8:00 AM IST
+    # scheduler.add_job(
+    #     send_morning_reminders,
+    #     CronTrigger(hour=8, minute=0, timezone="Asia/Kolkata"),
+    #     id="morning_reminders",
+    #     name="Morning Medicine Reminders",
+    #     replace_existing=True
+    # )
+
+    # # Evening reminder - 8:00 PM IST
+    # scheduler.add_job(
+    #     send_evening_reminders,
+    #     CronTrigger(hour=20, minute=0, timezone="Asia/Kolkata"),
+    #     id="evening_reminders",
+    #     name="Evening Night Medicine Reminders",
+    #     replace_existing=True
+    # )
+
+    # # Visit summary - 6:00 PM IST
+    # scheduler.add_job(
+    #     send_visit_summary,
+    #     CronTrigger(hour=18, minute=0, timezone="Asia/Kolkata"),
+    #     id="visit_summary",
+    #     name="Evening Visit Summary",
+    #     replace_existing=True
+    # )
+
+    # # Review requests - 10:00 AM IST
+    # scheduler.add_job(
+    #     send_review_requests,
+    #     CronTrigger(hour=10, minute=0, timezone="Asia/Kolkata"),
+    #     id="review_requests",
+    #     name="Day 7 Review Requests",
+    #     replace_existing=True
+    # )
+
+        # Morning reminder - 12:50 PM IST
     scheduler.add_job(
         send_morning_reminders,
-        CronTrigger(hour=8, minute=0, timezone="Asia/Kolkata"),
+        CronTrigger(hour=12, minute=50, timezone="Asia/Kolkata"),
         id="morning_reminders",
         name="Morning Medicine Reminders",
         replace_existing=True
     )
 
-    # Evening reminder - 8:00 PM IST
+    # Evening reminder - 12:51 PM IST
     scheduler.add_job(
         send_evening_reminders,
-        CronTrigger(hour=20, minute=0, timezone="Asia/Kolkata"),
+        CronTrigger(hour=12, minute=51, timezone="Asia/Kolkata"),
         id="evening_reminders",
         name="Evening Night Medicine Reminders",
         replace_existing=True
     )
 
-    # Visit summary - 6:00 PM IST
+    # Visit summary - 12:52 PM IST
     scheduler.add_job(
         send_visit_summary,
-        CronTrigger(hour=18, minute=0, timezone="Asia/Kolkata"),
+        CronTrigger(hour=12, minute=52, timezone="Asia/Kolkata"),
         id="visit_summary",
         name="Evening Visit Summary",
         replace_existing=True
     )
 
-    # Review requests - 10:00 AM IST
+    # Review requests - 12:53 PM IST
     scheduler.add_job(
         send_review_requests,
-        CronTrigger(hour=10, minute=0, timezone="Asia/Kolkata"),
+        CronTrigger(hour=12, minute=57, timezone="Asia/Kolkata"),
         id="review_requests",
         name="Day 7 Review Requests",
         replace_existing=True
     )
 
-    print("✅ Scheduler initialized:")
-    print("   🌅 Morning reminders:  8:00 AM IST")
-    print("   🌙 Evening reminders:  8:00 PM IST")
-    print("   🏥 Visit summary:      6:00 PM IST")
-    print("   ⭐ Review requests:   10:00 AM IST")
+    # print("✅ Scheduler initialized:")
+    # print("   🌅 Morning reminders:  8:00 AM IST")
+    # print("   🌙 Evening reminders:  8:00 PM IST")
+    # print("   🏥 Visit summary:      6:00 PM IST")
+    # print("   ⭐ Review requests:   10:00 AM IST")
 
     return scheduler
