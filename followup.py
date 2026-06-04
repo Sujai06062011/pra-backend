@@ -44,8 +44,7 @@ BUCKET_NAME = "clinic-audio"
 LANGUAGE_CONFIG = {
     "tamil": {
         "code": "ta-IN",
-        "speaker": "ritu",
-        "pace": 1.05,
+        "speaker": "kavitha",
         "script": (
             "வணக்கம் {name}! நான் {doctor} கிளினிக்கிலிருந்து பேசுகிறேன். "
             "உங்கள் மருந்து கோர்ஸ் முடிந்தது. "
@@ -65,8 +64,7 @@ LANGUAGE_CONFIG = {
     },
     "hindi": {
         "code": "hi-IN",
-        "speaker": "ritu",
-         "pace": 1.05,
+        "speaker": "priya",
         "script": (
             "नमस्ते {name}! मैं {doctor} क्लिनिक से बोल रही हूं। "
             "आपका दवाई का कोर्स पूरा हो गया है। "
@@ -87,7 +85,6 @@ LANGUAGE_CONFIG = {
     "english": {
         "code": "en-IN",
         "speaker": "ritu",
-         "pace": 1.05,
         "script": (
             "Hello {name}! This is a call from {doctor} Clinic. "
             "Your medicine course has been completed. "
@@ -109,6 +106,7 @@ LANGUAGE_CONFIG = {
 
 
 async def generate_sarvam_audio(text: str, language: str) -> bytes:
+    """Generate audio using Sarvam AI Bulbul v3"""
     config = LANGUAGE_CONFIG.get(language, LANGUAGE_CONFIG["english"])
 
     async with httpx.AsyncClient() as client:
@@ -124,7 +122,7 @@ async def generate_sarvam_audio(text: str, language: str) -> bytes:
                 "speaker": config["speaker"],
                 "model": "bulbul:v3",
                 "audio_format": "wav",
-                "pace": config.get("pace", 1.0),
+                "pace": 0.9,
                 "enable_preprocessing": True
             },
             timeout=30.0
@@ -443,36 +441,18 @@ async def handle_voice_followup_webhook(request: Request):
 RESPONSE_SCRIPTS = {
     "tamil": {
         "1": "மிக்க மகிழ்ச்சி! நீங்கள் நலமாக இருக்கிறீர்கள் என்று தெரிந்து மகிழ்ச்சி. நன்றி. வணக்கம்!",
-        "2": "சரி! விரைவில் appointment ஏற்பாடு செய்கிறோம். நன்றி. வணக்கம்!"
+        "2": "சரி! உங்கள் WhatsApp-ல் appointment book பண்ண message வரும். நன்றி. வணக்கம்!"
     },
     "hindi": {
         "1": "बहुत अच्छा! हमें खुशी है कि आप बेहतर हैं। धन्यवाद। नमस्ते!",
-        "2": "जल्द ही अपॉइंटमेंट बुक होगा। धन्यवाद। नमस्ते!"
+        "2": "ठीक है! आपके WhatsApp पर appointment book करने का message आएगा। धन्यवाद। नमस्ते!"
     },
     "english": {
         "1": "Wonderful! We are glad you are feeling better. Stay healthy. Goodbye!",
-        "2": "We will book your appointment shortly. Thank you. Goodbye!"
+        "2": "Sure! We will send you a WhatsApp message to book your appointment. Thank you. Goodbye!"
     }
 }
 
-async def prewarm_response_audios():
-    """
-    Pre-generate all response audios at startup.
-    6 files total - 3 languages x 2 responses.
-    Skips if already cached.
-    """
-    print("🔥 Pre-warming response audios...")
-    languages = ["english", "tamil", "hindi"]
-    digits = ["1", "2"]
-    
-    for lang in languages:
-        for digit in digits:
-            try:
-                await get_or_generate_response_audio(digit, lang)
-            except Exception as e:
-                print(f"❌ Pre-warm failed for {lang}/{digit}: {e}")
-    
-    print("✅ All response audios ready!")
 
 async def get_or_generate_response_audio(digit: str, language: str) -> str:
     """
@@ -514,6 +494,73 @@ async def handle_voice_followup_response(request: Request):
             "followup_call_response": followup_response,
             "followup_replied": True
         }).eq("id", pres_id).execute()
+
+    # If patient needs appointment → send WhatsApp booking prompt
+    if digit == "2" and pres_id:
+        try:
+            pres_result = supabase.table("prescriptions").select(
+                "patients(name, mobile, language), doctors(clinic_name)"
+            ).eq("id", pres_id).execute()
+
+            if pres_result.data:
+                patient = pres_result.data[0].get("patients", {})
+                doctor = pres_result.data[0].get("doctors", {})
+                mobile = patient.get("mobile", "")
+                patient_name = patient.get("name", "")
+                patient_lang = patient.get("language", "english")
+                clinic_name = doctor.get("clinic_name", "Clinic")
+
+                if mobile:
+                    # Build booking prompt based on language
+                    if patient_lang == "tamil":
+                        booking_msg = (
+                            f"வணக்கம் {patient_name}! 👋
+
+"
+                            f"{clinic_name} appointment பண்ண:
+
+"
+                            f"1 அழுத்தவும் - Appointment Book பண்ண"
+                        )
+                    elif patient_lang == "hindi":
+                        booking_msg = (
+                            f"नमस्ते {patient_name}! 👋
+
+"
+                            f"{clinic_name} में appointment के लिए:
+
+"
+                            f"1 दबाएं - Appointment Book करें"
+                        )
+                    else:
+                        booking_msg = (
+                            f"Hello {patient_name}! 👋
+
+"
+                            f"Let us book your appointment at {clinic_name}.
+
+"
+                            f"Reply 1 to Book Appointment now."
+                        )
+
+                    # Send WhatsApp
+                    twilio_client.messages.create(
+                        from_=TWILIO_FROM,
+                        to=f"whatsapp:+{mobile}",
+                        body=booking_msg
+                    )
+
+                    # Reset conversation state to idle
+                    supabase.rpc("upsert_conversation_state", {"p_mobile": mobile}).execute()
+                    supabase.table("conversation_state").update({
+                        "state": "idle",
+                        "temp_data": {}
+                    }).eq("mobile", mobile).execute()
+
+                    print(f"✅ Booking WhatsApp sent to {patient_name} ({mobile})")
+
+        except Exception as e:
+            print(f"❌ Error sending booking WhatsApp: {e}")
 
     # Get cached Sarvam response audio
     valid_digits = ["1", "2"]
