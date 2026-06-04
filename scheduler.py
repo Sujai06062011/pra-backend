@@ -1,0 +1,377 @@
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from datetime import date, datetime, timedelta
+from supabase import create_client
+from twilio.rest import Client
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+supabase = create_client(
+    os.getenv("SUPABASE_URL"),
+    os.getenv("SUPABASE_SERVICE_KEY")
+)
+
+twilio_client = Client(
+    os.getenv("TWILIO_ACCOUNT_SID"),
+    os.getenv("TWILIO_AUTH_TOKEN")
+)
+
+TWILIO_FROM = os.getenv("TWILIO_WHATSAPP_FROM")
+
+
+def send_whatsapp(to_number: str, message: str):
+    """Send WhatsApp message via Twilio"""
+    try:
+        msg = twilio_client.messages.create(
+            from_=TWILIO_FROM,
+            to=f"whatsapp:+{to_number}",
+            body=message
+        )
+        print(f"✅ Sent to {to_number}: SID {msg.sid}")
+        return True
+    except Exception as e:
+        print(f"❌ Twilio error for {to_number}: {e}")
+        return False
+
+
+def get_active_medicines_by_patient(reminder_type: str = "morning"):
+    """
+    Fetch all active medicines grouped by patient.
+    reminder_type: "morning" = all medicines, "evening" = night medicines only
+    Returns: dict of {mobile: {patient_info, medicines: []}}
+    """
+    today = date.today()
+    today_str = today.isoformat()
+
+    # Fetch all prescriptions with medicines and patient info
+    result = supabase.table("prescriptions").select(
+        "id, prescription_date, dietary_instructions, "
+        "patient_id, "
+        "patients(name, mobile), "
+        "doctors(clinic_name), "
+        "prescription_medicines(medicine_name, dosage, morning, afternoon, evening, night, before_food, duration_days, instructions, sort_order)"
+    ).execute()
+
+    prescriptions = result.data or []
+
+    # Group active medicines by patient mobile
+    patients_medicines = {}
+
+    for pres in prescriptions:
+        patient = pres.get("patients", {})
+        doctor = pres.get("doctors", {})
+        medicines = pres.get("prescription_medicines", [])
+        mobile = patient.get("mobile", "")
+        patient_name = patient.get("name", "")
+        clinic_name = doctor.get("clinic_name", "Clinic")
+        pres_date_str = pres.get("prescription_date", "")
+        dietary = pres.get("dietary_instructions", "")
+
+        if not mobile or not medicines or not pres_date_str:
+            continue
+
+        pres_date = datetime.strptime(pres_date_str, "%Y-%m-%d").date()
+        day_number = (today - pres_date).days + 1
+
+        for med in sorted(medicines, key=lambda x: x.get("sort_order", 0)):
+            duration = med.get("duration_days", 1)
+            end_date = pres_date + timedelta(days=duration - 1)
+
+            # Skip if medicine course ended
+            if today > end_date:
+                continue
+
+            # For evening reminder, only include night medicines
+            if reminder_type == "evening" and not med.get("night"):
+                continue
+
+            if mobile not in patients_medicines:
+                patients_medicines[mobile] = {
+                    "patient_name": patient_name,
+                    "clinic_name": clinic_name,
+                    "dietary": dietary,
+                    "day_number": day_number,
+                    "morning": [],
+                    "afternoon": [],
+                    "evening": [],
+                    "night": []
+                }
+
+            # Categorize medicine by timing
+            if med.get("morning"):
+                patients_medicines[mobile]["morning"].append(med)
+            if med.get("afternoon"):
+                patients_medicines[mobile]["afternoon"].append(med)
+            if med.get("evening"):
+                patients_medicines[mobile]["evening"].append(med)
+            if med.get("night"):
+                patients_medicines[mobile]["night"].append(med)
+
+            # Update dietary if available
+            if dietary and not patients_medicines[mobile]["dietary"]:
+                patients_medicines[mobile]["dietary"] = dietary
+
+    return patients_medicines
+
+
+def build_morning_message(mobile: str, data: dict) -> str:
+    """Build full day medicine summary message"""
+    patient_name = data["patient_name"]
+    clinic_name = data["clinic_name"]
+    dietary = data["dietary"]
+    day_number = data["day_number"]
+
+    morning = data["morning"]
+    afternoon = data["afternoon"]
+    evening = data["evening"]
+    night = data["night"]
+
+    lines = []
+    lines.append(f"Good morning {patient_name}! 🌅")
+    lines.append(f"")
+    lines.append(f"💊 Medicine Reminder - Day {day_number}")
+    lines.append(f"")
+
+    if morning:
+        lines.append("🌅 Morning:")
+        for med in morning:
+            food = "before food" if med.get("before_food") else "after food"
+            lines.append(f"   • {med['medicine_name']} {med['dosage']} ({food})")
+
+    if afternoon:
+        lines.append("🌞 Afternoon:")
+        for med in afternoon:
+            food = "before food" if med.get("before_food") else "after food"
+            lines.append(f"   • {med['medicine_name']} {med['dosage']} ({food})")
+
+    if evening:
+        lines.append("🌆 Evening:")
+        for med in evening:
+            food = "before food" if med.get("before_food") else "after food"
+            lines.append(f"   • {med['medicine_name']} {med['dosage']} ({food})")
+
+    if night:
+        lines.append("🌙 Night:")
+        for med in night:
+            food = "before food" if med.get("before_food") else "after food"
+            lines.append(f"   • {med['medicine_name']} {med['dosage']} ({food})")
+
+    if dietary:
+        lines.append("")
+        lines.append(f"🥗 Diet: {dietary}")
+
+    lines.append("")
+    lines.append("Take care and get well soon!")
+    lines.append(f"- {clinic_name}")
+
+    return "\n".join(lines)
+
+
+def build_evening_message(mobile: str, data: dict) -> str:
+    """Build night medicine reminder message"""
+    patient_name = data["patient_name"]
+    clinic_name = data["clinic_name"]
+    night = data["night"]
+
+    lines = []
+    lines.append(f"Good evening {patient_name}! 🌙")
+    lines.append("")
+    lines.append("Don't forget your night medicines:")
+    lines.append("")
+
+    for med in night:
+        food = "before food" if med.get("before_food") else "after food"
+        instructions = med.get("instructions", "")
+        inst_str = f" - {instructions}" if instructions else ""
+        lines.append(f"🌙 {med['medicine_name']} {med['dosage']}{inst_str} ({food})")
+
+    lines.append("")
+    lines.append("Good night! Rest well. 😴")
+    lines.append(f"- {clinic_name}")
+
+    return "\n".join(lines)
+
+
+async def send_morning_reminders():
+    """
+    8AM Job: Send full day medicine summary to all patients
+    with active prescriptions. One message per patient.
+    """
+    print("🌅 Running: Morning Medicine Reminder Job")
+
+    patients_medicines = get_active_medicines_by_patient("morning")
+    print(f"Found {len(patients_medicines)} patients with active medicines")
+
+    for mobile, data in patients_medicines.items():
+        message = build_morning_message(mobile, data)
+        send_whatsapp(mobile, message)
+        print(f"✅ Morning reminder sent to {data['patient_name']} ({mobile})")
+
+
+async def send_evening_reminders():
+    """
+    8PM Job: Send night medicine reminder only if patient
+    has night medicines. One message per patient.
+    """
+    print("🌙 Running: Evening Medicine Reminder Job")
+
+    patients_medicines = get_active_medicines_by_patient("evening")
+
+    # Filter only patients who have night medicines
+    night_patients = {
+        mobile: data for mobile, data in patients_medicines.items()
+        if data["night"]
+    }
+
+    print(f"Found {len(night_patients)} patients with night medicines")
+
+    for mobile, data in night_patients.items():
+        message = build_evening_message(mobile, data)
+        send_whatsapp(mobile, message)
+        print(f"✅ Evening reminder sent to {data['patient_name']} ({mobile})")
+
+
+async def send_visit_summary():
+    """
+    6PM Job: Send visit summary to patients who visited today.
+    """
+    print("🏥 Running: Visit Summary Job")
+    today = date.today().isoformat()
+
+    result = supabase.table("visits").select(
+        "id, patient_id, doctor_id, diagnosis, follow_up_date, "
+        "patients(name, mobile), doctors(clinic_name, name)"
+    ).eq("visit_date", today).eq("visit_status", "Completed").execute()
+
+    visits = result.data or []
+    print(f"Found {len(visits)} visits today")
+
+    for visit in visits:
+        try:
+            patient = visit.get("patients", {})
+            doctor = visit.get("doctors", {})
+            patient_name = patient.get("name", "Patient")
+            mobile = patient.get("mobile", "")
+            clinic_name = doctor.get("clinic_name", "Clinic")
+            doctor_name = doctor.get("name", "Doctor")
+            follow_up = visit.get("follow_up_date", "")
+            diagnosis = visit.get("diagnosis", "")
+
+            if not mobile:
+                continue
+
+            follow_up_str = ""
+            if follow_up:
+                follow_up_date = datetime.strptime(follow_up, "%Y-%m-%d")
+                follow_up_str = f"\n📅 Next Review: {follow_up_date.strftime('%d %B %Y')}"
+
+            message = (
+                f"Dear {patient_name},\n\n"
+                f"Thank you for visiting {clinic_name} today. 🙏\n\n"
+                f"Diagnosis: {diagnosis}"
+                f"{follow_up_str}\n\n"
+                f"Please follow the prescribed medicines and instructions.\n\n"
+                f"For any queries reply to this message.\n"
+                f"- {doctor_name}"
+            )
+
+            send_whatsapp(mobile, message)
+
+        except Exception as e:
+            print(f"❌ Error sending visit summary: {e}")
+
+
+async def send_review_requests():
+    """
+    10AM Job: Send Google review to patients who visited 7 days ago.
+    """
+    print("⭐ Running: Review Request Job")
+    seven_days_ago = (date.today() - timedelta(days=7)).isoformat()
+
+    result = supabase.table("visits").select(
+        "id, patient_id, "
+        "patients(name, mobile), "
+        "doctors(clinic_name, name)"
+    ).eq("visit_date", seven_days_ago).eq("visit_status", "Completed").execute()
+
+    visits = result.data or []
+    print(f"Found {len(visits)} visits from 7 days ago")
+
+    for visit in visits:
+        try:
+            patient = visit.get("patients", {})
+            doctor = visit.get("doctors", {})
+            patient_name = patient.get("name", "Patient")
+            mobile = patient.get("mobile", "")
+            clinic_name = doctor.get("clinic_name", "Clinic")
+            doctor_name = doctor.get("name", "Doctor")
+
+            if not mobile:
+                continue
+
+            message = (
+                f"Dear {patient_name},\n\n"
+                f"We hope you are feeling much better now! 😊\n\n"
+                f"It has been a week since your visit to {clinic_name}. "
+                f"Your feedback means a lot to us!\n\n"
+                f"⭐ Please take 1 minute to share your experience:\n"
+                f"https://g.page/r/drkumarclinic/review\n\n"
+                f"Thank you for trusting us with your health!\n"
+                f"- {doctor_name} & Team"
+            )
+
+            send_whatsapp(mobile, message)
+
+        except Exception as e:
+            print(f"❌ Error sending review request: {e}")
+
+
+def init_scheduler() -> AsyncIOScheduler:
+    """Initialize and return the scheduler"""
+    scheduler = AsyncIOScheduler(timezone="Asia/Kolkata")
+
+    # Morning reminder - 8:00 AM IST
+    scheduler.add_job(
+        send_morning_reminders,
+        CronTrigger(hour=8, minute=0, timezone="Asia/Kolkata"),
+        id="morning_reminders",
+        name="Morning Medicine Reminders",
+        replace_existing=True
+    )
+
+    # Evening reminder - 8:00 PM IST
+    scheduler.add_job(
+        send_evening_reminders,
+        CronTrigger(hour=20, minute=0, timezone="Asia/Kolkata"),
+        id="evening_reminders",
+        name="Evening Night Medicine Reminders",
+        replace_existing=True
+    )
+
+    # Visit summary - 6:00 PM IST
+    scheduler.add_job(
+        send_visit_summary,
+        CronTrigger(hour=18, minute=0, timezone="Asia/Kolkata"),
+        id="visit_summary",
+        name="Evening Visit Summary",
+        replace_existing=True
+    )
+
+    # Review requests - 10:00 AM IST
+    scheduler.add_job(
+        send_review_requests,
+        CronTrigger(hour=10, minute=0, timezone="Asia/Kolkata"),
+        id="review_requests",
+        name="Day 7 Review Requests",
+        replace_existing=True
+    )
+
+    print("✅ Scheduler initialized:")
+    print("   🌅 Morning reminders:  8:00 AM IST")
+    print("   🌙 Evening reminders:  8:00 PM IST")
+    print("   🏥 Visit summary:      6:00 PM IST")
+    print("   ⭐ Review requests:   10:00 AM IST")
+
+    return scheduler

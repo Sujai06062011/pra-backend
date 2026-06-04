@@ -1,16 +1,17 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Form
 from fastapi.responses import PlainTextResponse
 from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
 from dotenv import load_dotenv
 import os
 from whatsapp_handler import handle_message
-from scheduler import init_scheduler
+import asyncio
 
 load_dotenv()
 
 app = FastAPI(title="PRA - Patient Relationship Assistant")
 
+# Twilio client
 twilio_client = Client(
     os.getenv("TWILIO_ACCOUNT_SID"),
     os.getenv("TWILIO_AUTH_TOKEN")
@@ -20,22 +21,12 @@ TWILIO_FROM = os.getenv("TWILIO_WHATSAPP_FROM")
 
 
 def send_whatsapp(to_number: str, message: str):
-    try:
-        msg = twilio_client.messages.create(
-            from_=TWILIO_FROM,
-            to=f"whatsapp:+{to_number}",
-            body=message
-        )
-        print(f"✅ Sent to {to_number}: SID {msg.sid}")
-    except Exception as e:
-        print(f"❌ Twilio error: {e}")
-
-
-@app.on_event("startup")
-async def startup_event():
-    scheduler = init_scheduler()
-    scheduler.start()
-    print("🚀 PRA Backend started with scheduler")
+    """Send WhatsApp message via Twilio"""
+    twilio_client.messages.create(
+        from_=TWILIO_FROM,
+        to=f"whatsapp:+{to_number}",
+        body=message
+    )
 
 
 @app.get("/")
@@ -72,44 +63,17 @@ async def whatsapp_webhook(request: Request):
         import traceback
         traceback.print_exc()
 
+    # Return empty TwiML — stops Twilio from sending "OK" as message
     resp = MessagingResponse()
     return PlainTextResponse(str(resp), status_code=200, media_type="application/xml")
 
 
 @app.get("/webhook/whatsapp")
 async def whatsapp_verify(request: Request):
+    """Handle Meta webhook verification"""
     params = dict(request.query_params)
     challenge = params.get("hub.challenge", "")
     return PlainTextResponse(challenge)
-
-
-# ── TEST TRIGGER ENDPOINTS ────────────────────────────────
-@app.post("/trigger/morning-reminders")
-async def trigger_morning_reminders():
-    from scheduler import send_morning_reminders
-    await send_morning_reminders()
-    return {"status": "Morning reminders sent"}
-
-
-@app.post("/trigger/evening-reminders")
-async def trigger_evening_reminders():
-    from scheduler import send_evening_reminders
-    await send_evening_reminders()
-    return {"status": "Evening reminders sent"}
-
-
-@app.post("/trigger/visit-summary")
-async def trigger_visit_summary():
-    from scheduler import send_visit_summary
-    await send_visit_summary()
-    return {"status": "Visit summaries sent"}
-
-
-@app.post("/trigger/review-requests")
-async def trigger_review_requests():
-    from scheduler import send_review_requests
-    await send_review_requests()
-    return {"status": "Review requests sent"}
 
 
 if __name__ == "__main__":
