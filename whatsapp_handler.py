@@ -152,6 +152,8 @@ async def handle_message(from_number: str, text: str, to_number: str, media_url:
         intent = "family_dob_provided"
     elif current_state == "awaiting_family_gender":
         intent = "family_gender_provided"
+    elif current_state == "awaiting_query_patient_select":
+        intent = "query_patient_selected"
     elif current_state == "awaiting_query":
         intent = "query_text_provided"
     elif media_url:
@@ -468,28 +470,75 @@ async def handle_message(from_number: str, text: str, to_number: str, media_url:
 
     # ── ASK DOCTOR A QUESTION ─────────────────────────────────
     elif intent == "ask_question":
-        reply = (
-            "Please type your question for Dr. Kumar.\n\n"
-            "Our doctor will reply within a few hours. 💬"
-        )
-        new_state = "awaiting_query"
+        # Get all patients linked to this mobile (own + family)
+        from database import supabase as _supa
+        _fam = _supa.table("patients").select("id, name, patient_code").or_(
+            f"mobile.eq.{from_number},family_head_mobile.eq.{from_number}"
+        ).execute()
+        _patients = _fam.data or []
+
+        if len(_patients) == 1:
+            # Only one patient — skip selection
+            reply = (
+                "Please type your question for Dr. Kumar.\n\n"
+                "Our doctor will reply within a few hours. 💬"
+            )
+            new_state = "awaiting_query"
+            new_temp = {"query_patient_id": _patients[0]["id"]}
+        else:
+            # Multiple patients — ask which one
+            lines = "Your question is for which patient?\n\n"
+            for i, p in enumerate(_patients, 1):
+                code = f" ({p['patient_code']})" if p.get("patient_code") else ""
+                lines += f"{i}. {p['name']}{code}\n"
+            lines += "\nReply with a number."
+            reply = lines
+            new_state = "awaiting_query_patient_select"
+            new_temp = {"query_patients": _patients}
+
+    elif intent == "query_patient_selected":
+        _patients = temp_data.get("query_patients", [])
+        try:
+            choice = int(t) - 1
+            if 0 <= choice < len(_patients):
+                selected = _patients[choice]
+                reply = (
+                    "Please type your question for Dr. Kumar.\n\n"
+                    "Our doctor will reply within a few hours. 💬"
+                )
+                new_state = "awaiting_query"
+                new_temp = {"query_patient_id": selected["id"]}
+            else:
+                lines = "Invalid choice. Which patient?\n\n"
+                for i, p in enumerate(_patients, 1):
+                    code = f" ({p['patient_code']})" if p.get("patient_code") else ""
+                    lines += f"{i}. {p['name']}{code}\n"
+                reply = lines
+                new_state = "awaiting_query_patient_select"
+                new_temp = temp_data
+        except (ValueError, IndexError):
+            reply = "Please reply with a number."
+            new_state = "awaiting_query_patient_select"
+            new_temp = temp_data
 
     elif intent == "query_text_provided":
+        query_patient_id = temp_data.get("query_patient_id", patient_id)
         try:
             from database import supabase as _supa
             import datetime as _dt
             _supa.table("queries").insert({
-                "patient_id": patient_id,
+                "patient_id": query_patient_id,
                 "doctor_id": doctor_id,
                 "question": text,
                 "status": "Pending",
                 "created_at": _dt.datetime.utcnow().isoformat(),
             }).execute()
+            print(f"✅ Query saved for patient {query_patient_id}")
         except Exception as _e:
             print(f"❌ Failed to save query: {_e}")
         reply = (
             "✅ Your question has been sent to Dr. Kumar!\n\n"
-            "You'll receive a reply on WhatsApp within a few hours.\n\n"
+            "You will receive a reply on WhatsApp within a few hours.\n\n"
             "Reply MENU for main menu."
         )
         new_state = "idle"

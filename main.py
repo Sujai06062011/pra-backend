@@ -233,6 +233,18 @@ async def get_patient(patient_id: str):
     return result.data
 
 
+@app.get("/patients/{patient_id}/visits")
+async def get_patient_visits(patient_id: str):
+    from database import supabase
+    result = supabase.table("visits") \
+        .select("*, appointments(appointment_date, token_number)") \
+        .eq("patient_id", patient_id) \
+        .order("created_at", desc=True) \
+        .limit(5) \
+        .execute()
+    return result.data or []
+
+
 # ── APPOINTMENTS ──────────────────────────────────────────
 @app.get("/appointments/today")
 async def today_appointments(doctor_id: str):
@@ -391,9 +403,12 @@ async def pending_queries(doctor_id: str):
 
 
 @app.get("/queries")
-async def list_queries(doctor_id: str):
+async def list_queries(doctor_id: str, patient_id: str = ""):
     from database import supabase
-    result = supabase.table("queries").select("*, patients(name, mobile, patient_code, age, gender, language, created_at)").eq("doctor_id", doctor_id).order("created_at", desc=True).execute()
+    q = supabase.table("queries").select("*, patients(name, mobile, patient_code, age, gender, language, created_at)").eq("doctor_id", doctor_id)
+    if patient_id:
+        q = q.eq("patient_id", patient_id)
+    result = q.order("created_at", desc=True).execute()
     return result.data or []
 
 
