@@ -243,12 +243,14 @@ async def today_appointments(doctor_id: str):
 
 
 @app.get("/appointments")
-async def list_appointments(doctor_id: str, date: str = ""):
+async def list_appointments(doctor_id: str, date: str = "", date_from: str = "", date_to: str = ""):
     from database import supabase
     q = supabase.table("appointments").select("*, patients(*)").eq("doctor_id", doctor_id)
     if date:
         q = q.eq("appointment_date", date)
-    result = q.order("appointment_date", desc=True).order("token_number", desc=False).execute()
+    elif date_from and date_to:
+        q = q.gte("appointment_date", date_from).lte("appointment_date", date_to)
+    result = q.order("appointment_date", desc=True).order("token_number", desc=False).limit(50).execute()
     return result.data or []
 
 
@@ -270,17 +272,18 @@ async def queue_status(doctor_id: str, date: str = ""):
     token_row = supabase.table("tokens").select("current_token").eq("doctor_id", doctor_id).eq("queue_date", d).execute()
     current = token_row.data[0]["current_token"] if token_row.data else 0
 
-    total = supabase.table("appointments").select("id", count="exact").eq("doctor_id", doctor_id).eq("appointment_date", d).execute()
-    completed = supabase.table("appointments").select("id", count="exact").eq("doctor_id", doctor_id).eq("appointment_date", d).eq("status", "completed").execute()
     appts = supabase.table("appointments").select("*, patients(*)").eq("doctor_id", doctor_id).eq("appointment_date", d).order("token_number", desc=False).execute()
-    waiting = [a for a in (appts.data or []) if a.get("status") not in ("completed", "cancelled") and (a.get("token_number") or 0) >= current]
+    all_appts = appts.data or []
+    confirmed = [a for a in all_appts if a.get("status") == "Confirmed"]
+    seen    = [a for a in confirmed if (a.get("token_number") or 0) < current]
+    waiting = [a for a in confirmed if (a.get("token_number") or 0) > current]
 
     return {
         "current_token": current,
-        "total_today": total.count or 0,
+        "total_today": len(all_appts),
         "waiting": len(waiting),
-        "completed": completed.count or 0,
-        "appointments": appts.data or [],
+        "completed": len(seen),
+        "appointments": all_appts,
     }
 
 
@@ -293,6 +296,20 @@ async def queue_next(request: Request):
     today = dt.date.today().isoformat()
     token_row = supabase.table("tokens").select("current_token").eq("doctor_id", doctor_id).eq("queue_date", today).execute()
     new_token = (token_row.data[0]["current_token"] if token_row.data else 0) + 1
+    supabase.table("tokens").upsert({"doctor_id": doctor_id, "queue_date": today, "current_token": new_token}, on_conflict="doctor_id,queue_date").execute()
+    return {"token": new_token}
+
+
+@app.post("/queue/prev")
+async def queue_prev(request: Request):
+    from database import supabase
+    import datetime as dt
+    body = await request.json()
+    doctor_id = body["doctor_id"]
+    today = dt.date.today().isoformat()
+    token_row = supabase.table("tokens").select("current_token").eq("doctor_id", doctor_id).eq("queue_date", today).execute()
+    current = token_row.data[0]["current_token"] if token_row.data else 1
+    new_token = max(1, current - 1)
     supabase.table("tokens").upsert({"doctor_id": doctor_id, "queue_date": today, "current_token": new_token}, on_conflict="doctor_id,queue_date").execute()
     return {"token": new_token}
 
@@ -373,13 +390,17 @@ async def answer_query(query_id: str, request: Request):
     from database import supabase
     import datetime as dt
     body = await request.json()
-    # column is "reply" not "answer", "replied_at" not "answered_at", status "closed" not "answered"
-    result = supabase.table("queries").update({
+    # replied_by is a UUID column — fetch doctor_id from the query row
+    q_row = supabase.table("queries").select("doctor_id").eq("id", query_id).execute()
+    doctor_id = q_row.data[0]["doctor_id"] if q_row.data else None
+    update = {
         "reply": body["answer"],
         "status": "Closed",
         "replied_at": dt.datetime.utcnow().isoformat(),
-        "replied_by": "doctor",
-    }).eq("id", query_id).execute()
+    }
+    if doctor_id:
+        update["replied_by"] = doctor_id
+    result = supabase.table("queries").update(update).eq("id", query_id).execute()
     return result.data[0] if result.data else {}
 
 
