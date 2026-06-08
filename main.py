@@ -400,17 +400,39 @@ async def answer_query(query_id: str, request: Request):
     from database import supabase
     import datetime as dt
     body = await request.json()
-    # replied_by is a UUID column — fetch doctor_id from the query row
-    q_row = supabase.table("queries").select("doctor_id").eq("id", query_id).execute()
+    reply_text = body["answer"]
+    # replied_by is a UUID column — fetch doctor_id and patient_id from the query row
+    q_row = supabase.table("queries").select("doctor_id, patient_id").eq("id", query_id).execute()
     doctor_id = q_row.data[0]["doctor_id"] if q_row.data else None
+    patient_id = q_row.data[0]["patient_id"] if q_row.data else None
     update = {
-        "reply": body["answer"],
+        "reply": reply_text,
         "status": "Closed",
         "replied_at": dt.datetime.utcnow().isoformat(),
     }
     if doctor_id:
         update["replied_by"] = doctor_id
     result = supabase.table("queries").update(update).eq("id", query_id).execute()
+
+    # Send WhatsApp notification to patient (non-blocking — DB save already succeeded)
+    try:
+        if patient_id:
+            pat = supabase.table("patients").select("mobile").eq("id", patient_id).execute()
+            mobile = pat.data[0]["mobile"] if pat.data else None
+            if mobile:
+                msg = (
+                    f"👨‍⚕️ *Dr. Kumar Child Care Clinic*\n\n"
+                    f"Dr. Kumar has replied to your query:\n\n"
+                    f"_{reply_text}_\n\n"
+                    f"For appointments reply MENU"
+                )
+                send_whatsapp(mobile, msg)
+                print(f"✅ WhatsApp reply sent for query {query_id} to {mobile}")
+            else:
+                print(f"⚠️ No mobile found for patient {patient_id}, skipping WhatsApp")
+    except Exception as e:
+        print(f"❌ WhatsApp reply failed for query {query_id}: {e}")
+
     return result.data[0] if result.data else {}
 
 
