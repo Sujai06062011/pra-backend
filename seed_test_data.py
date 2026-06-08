@@ -2,19 +2,18 @@
 seed_test_data.py — Full test data reset for PRA
 
 Wipes all patient-related tables (keeps doctors) then inserts
-fresh records that exercise every scheduled job and flow:
+5 real patients that exercise every scheduled job and flow:
 
-  Flow                       Trigger
-  ──────────────────────     ────────────────────────────────────────
-  Morning medicine reminder  prescription_date=today, active medicines
-  Evening medicine reminder  same prescription, night=True medicines
-  Visit summary              visit with visit_date=today, status=Completed
-  Followup WhatsApp          followups row, scheduled_date=today, Pending
-  Followup voice call        prescription with whatsapp_sent=True, no reply
-  Google review              visit created 7 days ago (IST)
-  Patient asks doctor        query with status=Pending
-  Doctor replies             query with status=Closed + reply text
-  WhatsApp conversation      conversation_state for a mobile in idle
+  Patient         Mobile        Flow covered
+  ──────────────  ────────────  ──────────────────────────────────────────────
+  Sujaikumar      9047099959    Active prescription → morning + evening reminders
+  Dhanvanth       9047099959    Family (son of Sujaikumar), followup WhatsApp today
+  Poornima        9943941314    WA followup sent, no reply → voice call pending
+  Subramaniam     9965553323    Visited 7 days ago → Google review today
+  Selvarani       9047099979    Pending query + answered query, visit summary today
+
+  Queue today: token 1 (Sujaikumar)=Done, 2 (Dhanvanth)=In Progress,
+               3 (Selvarani)=Waiting, 4 (Poornima)=Waiting
 
 Usage:
   cd pra-backend
@@ -24,7 +23,7 @@ Usage:
 
 import os
 import sys
-from datetime import datetime, date, timedelta
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import pytz
 
@@ -38,62 +37,59 @@ supabase = create_client(
 
 IST = pytz.timezone("Asia/Kolkata")
 
-def ist_today():
-    return datetime.now(IST).date()
-
-def ist_days_ago(n):
-    return (ist_today() - timedelta(days=n))
-
-def ist_days_ahead(n):
-    return (ist_today() + timedelta(days=n))
+def today():      return datetime.now(IST).date()
+def days_ago(n):  return (today() - timedelta(days=n)).isoformat()
+def days_fwd(n):  return (today() + timedelta(days=n)).isoformat()
+def ts(d, t):     return f"{d}T{t}+05:30"   # IST timestamp helper
 
 # ── Constants ───────────────────────────────────────────────────────────
-DOCTOR_ID  = "8c33abe0-5d2e-4613-9437-c7c375e8d162"
-TEST_MOBILE = "919047099959"   # WhatsApp messages go here
+DOCTOR_ID = "8c33abe0-5d2e-4613-9437-c7c375e8d162"
 
-TODAY      = ist_today().isoformat()
-YESTERDAY  = ist_days_ago(1).isoformat()
-SEVEN_AGO  = ist_days_ago(7).isoformat()
-THREE_DAYS = ist_days_ahead(3).isoformat()
+TODAY     = today().isoformat()
+YESTERDAY = days_ago(1)
+SEVEN_AGO = days_ago(7)
+THREE_FWD = days_fwd(3)
 
-# Predictable UUIDs (prefix TEST- makes them easy to spot)
-P1 = "aaaaaaaa-0001-0001-0001-000000000001"  # Morning/evening reminder
-P2 = "aaaaaaaa-0002-0002-0002-000000000002"  # Followup WhatsApp today
-P3 = "aaaaaaaa-0003-0003-0003-000000000003"  # Followup voice call
-P4 = "aaaaaaaa-0004-0004-0004-000000000004"  # Visit summary today
-P5 = "aaaaaaaa-0005-0005-0005-000000000005"  # Google review (7 days ago)
-P6 = "aaaaaaaa-0006-0006-0006-000000000006"  # Query (pending)
-P7 = "aaaaaaaa-0007-0007-0007-000000000007"  # Family: child of P1
+# Patients
+SUJAI = "aaaaaaaa-1001-1001-1001-000000000001"  # Sujaikumar — morning/evening reminders
+DHAN  = "aaaaaaaa-1002-1002-1002-000000000002"  # Dhanvanth  — family son, followup WA today
+POOR  = "aaaaaaaa-1003-1003-1003-000000000003"  # Poornima   — voice call pending
+SUBR  = "aaaaaaaa-1004-1004-1004-000000000004"  # Subramaniam — Google review
+SELV  = "aaaaaaaa-1005-1005-1005-000000000005"  # Selvarani  — queries + visit summary
 
-A1 = "bbbbbbbb-0001-0001-0001-000000000001"  # P1 appt today
-A2 = "bbbbbbbb-0002-0002-0002-000000000002"  # P2 appt today
-A3 = "bbbbbbbb-0003-0003-0003-000000000003"  # P3 appt yesterday
-A4 = "bbbbbbbb-0004-0004-0004-000000000004"  # P4 appt today
-A5 = "bbbbbbbb-0005-0005-0005-000000000005"  # P5 appt 7 days ago
-A6 = "bbbbbbbb-0006-0006-0006-000000000006"  # P6 appt today
+# Appointments
+A_SUJAI = "bbbbbbbb-1001-1001-1001-000000000001"  # today token 1
+A_DHAN  = "bbbbbbbb-1002-1002-1002-000000000002"  # today token 2
+A_SELV  = "bbbbbbbb-1005-1005-1005-000000000005"  # today token 3
+A_POOR  = "bbbbbbbb-1003-1003-1003-000000000003"  # today token 4
+A_POOR2 = "bbbbbbbb-1003-1003-1003-000000000099"  # yesterday (for voice call prescription)
+A_SUBR  = "bbbbbbbb-1004-1004-1004-000000000004"  # 7 days ago
 
-V1 = "cccccccc-0001-0001-0001-000000000001"  # P1 visit today (morning reminder src)
-V2 = "cccccccc-0002-0002-0002-000000000002"  # P2 visit (prescription ended)
-V3 = "cccccccc-0003-0003-0003-000000000003"  # P3 visit (voice call pending)
-V4 = "cccccccc-0004-0004-0004-000000000004"  # P4 visit today (visit summary)
-V5 = "cccccccc-0005-0005-0005-000000000005"  # P5 visit 7 days ago (review)
-V6 = "cccccccc-0006-0006-0006-000000000006"  # P6 visit (query src)
+# Visits
+V_SUJAI = "cccccccc-1001-1001-1001-000000000001"  # today — active prescription src
+V_DHAN  = "cccccccc-1002-1002-1002-000000000002"  # today — followup WA src
+V_POOR  = "cccccccc-1003-1003-1003-000000000003"  # yesterday — voice call src
+V_SUBR  = "cccccccc-1004-1004-1004-000000000004"  # 7 days ago — Google review src
+V_SELV  = "cccccccc-1005-1005-1005-000000000005"  # today — visit summary + query src
 
-RX1 = "dddddddd-0001-0001-0001-000000000001"  # P1 active prescription
-RX2 = "dddddddd-0002-0002-0002-000000000002"  # P2 ended prescription (followup WhatsApp due)
-RX3 = "dddddddd-0003-0003-0003-000000000003"  # P3 prescription (voice call pending)
-RX4 = "dddddddd-0004-0004-0004-000000000004"  # P4 prescription today
+# Prescriptions
+RX_SUJAI = "dddddddd-1001-1001-1001-000000000001"  # active 5-day → morning/evening reminders
+RX_DHAN  = "dddddddd-1002-1002-1002-000000000002"  # 3-day ended yesterday → followup WA
+RX_POOR  = "dddddddd-1003-1003-1003-000000000003"  # WA sent, no reply → voice call
+RX_SELV  = "dddddddd-1005-1005-1005-000000000005"  # today
 
-FU1 = "eeeeeeee-0001-0001-0001-000000000001"  # P2 followup scheduled today
-FU2 = "eeeeeeee-0002-0002-0002-000000000002"  # P6 followup 3 days ahead
+# Followups
+FU_DHAN = "eeeeeeee-1002-1002-1002-000000000002"  # Dhanvanth followup today → WA job
+FU_SELV = "eeeeeeee-1005-1005-1005-000000000005"  # Selvarani followup 3 days ahead (future)
 
-Q1  = "ffffffff-0001-0001-0001-000000000001"  # Pending query from P6
-Q2  = "ffffffff-0002-0002-0002-000000000002"  # Closed/answered query from P6
+# Queries
+Q_SELV_PENDING = "ffffffff-1005-1005-1005-000000000001"  # Selvarani pending query
+Q_SELV_CLOSED  = "ffffffff-1005-1005-1005-000000000002"  # Selvarani answered query
+Q_SUJAI_PENDING = "ffffffff-1001-1001-1001-000000000001"  # Sujaikumar pending query
+
 
 # ── Wipe ────────────────────────────────────────────────────────────────
 def wipe_all():
-    """Delete all rows in dependency order (child → parent)."""
-    # Tables with text primary keys need different sentinel
     uuid_tables = [
         "prescription_medicines",
         "prescriptions",
@@ -105,75 +101,69 @@ def wipe_all():
         "tokens",
         "patients",
     ]
-    # conversation_state has a text 'mobile' PK, not uuid
     print("🗑️  Wiping tables...")
     for table in uuid_tables:
         try:
-            # Use gte with zero-uuid to match all rows
             supabase.table(table).delete().gte("id", "00000000-0000-0000-0000-000000000000").execute()
             print(f"   ✓ {table}")
         except Exception as e:
             print(f"   ✗ {table}: {e}")
-    # conversation_state: mobile is text PK
     try:
         supabase.table("conversation_state").delete().neq("mobile", "").execute()
         print("   ✓ conversation_state")
     except Exception as e:
         print(f"   ✗ conversation_state: {e}")
 
+
 # ── Seed ────────────────────────────────────────────────────────────────
 
 def seed_patients():
     rows = [
-        # P1 — Arjun Tamil: active prescription → morning + evening reminders
+        # Sujaikumar — 43 yrs, M, DOB 05-06-1983, mobile 9047099959
         {
-            "id": P1, "patient_code": "ARJ-9959-1990", "name": "Arjun Kumar",
-            "mobile": TEST_MOBILE, "age": 34, "gender": "Male",
+            "id": SUJAI, "patient_code": "SUJ-9959-1983",
+            "name": "Sujaikumar",
+            "mobile": "919047099959", "age": 43, "gender": "Male",
+            "date_of_birth": "1983-06-05",
             "language": "tamil", "registration_source": "whatsapp",
-            "created_at": f"{TODAY}T08:00:00+05:30",
+            "created_at": ts(TODAY, "08:00:00"),
         },
-        # P7 — Arjun's child (family member, same mobile)
+        # Dhanvanth — 13 yrs, M, DOB 03-04-2013, mobile 9047099959 (son of Sujaikumar)
         {
-            "id": P7, "patient_code": "ARI-9959-2020", "name": "Ariya Kumar",
-            "mobile": TEST_MOBILE, "age": 4, "gender": "Female",
+            "id": DHAN, "patient_code": "DHA-9959-2013",
+            "name": "Dhanvanth",
+            "mobile": "919047099959", "age": 13, "gender": "Male",
+            "date_of_birth": "2013-04-03",
             "language": "tamil", "registration_source": "whatsapp",
-            "family_head_mobile": TEST_MOBILE,
-            "created_at": f"{TODAY}T08:01:00+05:30",
+            "family_head_mobile": "919047099959",
+            "created_at": ts(TODAY, "08:05:00"),
         },
-        # P2 — Priya English: prescription ended yesterday → followup WhatsApp today
+        # Poornima — 43 yrs, F, DOB 02-05-1983, mobile 9943941314
         {
-            "id": P2, "patient_code": "PRI-9959-1995", "name": "Priya Nair",
-            "mobile": TEST_MOBILE, "age": 29, "gender": "Female",
-            "language": "english", "registration_source": "whatsapp",
-            "created_at": f"{YESTERDAY}T09:00:00+05:30",
-        },
-        # P3 — Ravi Hindi: WA followup sent, no reply → voice call due
-        {
-            "id": P3, "patient_code": "RAV-9959-1985", "name": "Ravi Sharma",
-            "mobile": TEST_MOBILE, "age": 39, "gender": "Male",
-            "language": "hindi", "registration_source": "whatsapp",
-            "created_at": f"{YESTERDAY}T10:00:00+05:30",
-        },
-        # P4 — Meena Tamil: visited today → visit summary (6 PM job)
-        {
-            "id": P4, "patient_code": "MEE-9959-1988", "name": "Meena Devi",
-            "mobile": TEST_MOBILE, "age": 36, "gender": "Female",
+            "id": POOR, "patient_code": "POO-1314-1983",
+            "name": "Poornima",
+            "mobile": "919943941314", "age": 43, "gender": "Female",
+            "date_of_birth": "1983-05-02",
             "language": "tamil", "registration_source": "whatsapp",
-            "created_at": f"{TODAY}T09:30:00+05:30",
+            "created_at": ts(YESTERDAY, "09:00:00"),
         },
-        # P5 — Suresh English: visited 7 days ago → Google review
+        # Subramaniam — 71 yrs, M, DOB 31-01-1955, mobile 9965553323
         {
-            "id": P5, "patient_code": "SUR-9959-1975", "name": "Suresh Babu",
-            "mobile": TEST_MOBILE, "age": 49, "gender": "Male",
-            "language": "english", "registration_source": "whatsapp",
-            "created_at": f"{SEVEN_AGO}T08:00:00+05:30",
-        },
-        # P6 — Lakshmi Tamil: has a pending query + an answered query
-        {
-            "id": P6, "patient_code": "LAK-9959-1992", "name": "Lakshmi S",
-            "mobile": TEST_MOBILE, "age": 32, "gender": "Female",
+            "id": SUBR, "patient_code": "SUB-3323-1955",
+            "name": "Subramaniam",
+            "mobile": "919965553323", "age": 71, "gender": "Male",
+            "date_of_birth": "1955-01-31",
             "language": "tamil", "registration_source": "whatsapp",
-            "created_at": f"{TODAY}T07:00:00+05:30",
+            "created_at": ts(SEVEN_AGO, "08:00:00"),
+        },
+        # Selvarani — 61 yrs, F, DOB 20-04-1965, mobile 9047099979
+        {
+            "id": SELV, "patient_code": "SEL-9979-1965",
+            "name": "Selvarani",
+            "mobile": "919047099979", "age": 61, "gender": "Female",
+            "date_of_birth": "1965-04-20",
+            "language": "tamil", "registration_source": "whatsapp",
+            "created_at": ts(TODAY, "07:30:00"),
         },
     ]
     supabase.table("patients").insert(rows).execute()
@@ -182,87 +172,87 @@ def seed_patients():
 
 def seed_appointments():
     rows = [
-        {"id": A1, "patient_id": P1, "doctor_id": DOCTOR_ID, "appointment_date": TODAY,     "appointment_time": "09:00", "token_number": 1, "status": "Confirmed"},
-        {"id": A2, "patient_id": P2, "doctor_id": DOCTOR_ID, "appointment_date": TODAY,     "appointment_time": "09:15", "token_number": 2, "status": "Confirmed"},
-        {"id": A3, "patient_id": P3, "doctor_id": DOCTOR_ID, "appointment_date": YESTERDAY, "appointment_time": "09:30", "token_number": 1, "status": "Confirmed"},
-        {"id": A4, "patient_id": P4, "doctor_id": DOCTOR_ID, "appointment_date": TODAY,     "appointment_time": "09:45", "token_number": 3, "status": "Confirmed"},
-        {"id": A5, "patient_id": P5, "doctor_id": DOCTOR_ID, "appointment_date": SEVEN_AGO, "appointment_time": "10:00", "token_number": 1, "status": "Confirmed"},
-        {"id": A6, "patient_id": P6, "doctor_id": DOCTOR_ID, "appointment_date": TODAY,     "appointment_time": "10:15", "token_number": 4, "status": "Confirmed"},
+        # Today's queue: Sujaikumar=1, Dhanvanth=2, Selvarani=3, Poornima=4
+        {"id": A_SUJAI, "patient_id": SUJAI, "doctor_id": DOCTOR_ID, "appointment_date": TODAY,     "appointment_time": "09:00", "token_number": 1, "status": "Confirmed"},
+        {"id": A_DHAN,  "patient_id": DHAN,  "doctor_id": DOCTOR_ID, "appointment_date": TODAY,     "appointment_time": "09:15", "token_number": 2, "status": "Confirmed"},
+        {"id": A_SELV,  "patient_id": SELV,  "doctor_id": DOCTOR_ID, "appointment_date": TODAY,     "appointment_time": "09:30", "token_number": 3, "status": "Confirmed"},
+        {"id": A_POOR,  "patient_id": POOR,  "doctor_id": DOCTOR_ID, "appointment_date": TODAY,     "appointment_time": "09:45", "token_number": 4, "status": "Confirmed"},
+        # Poornima also visited yesterday (source of voice-call prescription)
+        {"id": A_POOR2, "patient_id": POOR,  "doctor_id": DOCTOR_ID, "appointment_date": YESTERDAY, "appointment_time": "10:00", "token_number": 2, "status": "Confirmed"},
+        # Subramaniam visited 7 days ago
+        {"id": A_SUBR,  "patient_id": SUBR,  "doctor_id": DOCTOR_ID, "appointment_date": SEVEN_AGO, "appointment_time": "10:30", "token_number": 1, "status": "Confirmed"},
     ]
     supabase.table("appointments").insert(rows).execute()
     print(f"   ✓ appointments ({len(rows)} rows)")
 
 
 def seed_tokens():
+    # current_token=1: Sujaikumar=Done, Dhanvanth=In Progress, Selvarani+Poornima=Waiting
     rows = [
-        # Current token = 2 → token 1=Done, 2=In Progress, 3,4=Waiting
-        {"doctor_id": DOCTOR_ID, "queue_date": TODAY, "current_token": 2, "total_tokens": 4, "is_active": True},
+        {"doctor_id": DOCTOR_ID, "queue_date": TODAY, "current_token": 1, "total_tokens": 4, "is_active": True},
     ]
     supabase.table("tokens").insert(rows).execute()
-    print("   ✓ tokens (today: current=2, total=4)")
+    print("   ✓ tokens (today: current=1, total=4)")
 
 
 def seed_visits():
     rows = [
-        # V1 — P1 today: active visit (prescription will be added)
+        # Sujaikumar — visited today, active prescription → morning/evening reminders
         {
-            "id": V1, "patient_id": P1, "doctor_id": DOCTOR_ID, "appointment_id": A1,
+            "id": V_SUJAI, "patient_id": SUJAI, "doctor_id": DOCTOR_ID, "appointment_id": A_SUJAI,
             "visit_date": TODAY,
             "chief_complaint": "Fever, body ache",
-            "symptoms": "Fever 38.5°C, headache, body ache",
+            "symptoms": "Fever 38.5°C, headache, body ache since 2 days",
             "diagnosis": "Viral fever",
-            "notes": "Rest for 3 days. Plenty of fluids.",
-            "follow_up_date": THREE_DAYS,
-            "follow_up_notes": "Review after 3 days if fever persists",
+            "notes": "Rest for 3 days. Plenty of fluids. Avoid cold food.",
+            "follow_up_date": THREE_FWD,
+            "follow_up_notes": "Review if fever persists beyond 3 days",
             "visit_status": "Completed",
-            "created_at": f"{TODAY}T10:00:00+05:30",
+            "created_at": ts(TODAY, "09:30:00"),
         },
-        # V2 — P2 yesterday: prescription ended (followup WA due today)
+        # Dhanvanth — visited today, 3-day prescription → followup WA in 3 days
+        # Followup scheduled today (we set scheduled_date=TODAY to trigger immediately)
         {
-            "id": V2, "patient_id": P2, "doctor_id": DOCTOR_ID, "appointment_id": A2,
-            "visit_date": YESTERDAY,
-            "chief_complaint": "Sore throat",
-            "diagnosis": "Acute pharyngitis",
+            "id": V_DHAN, "patient_id": DHAN, "doctor_id": DOCTOR_ID, "appointment_id": A_DHAN,
+            "visit_date": TODAY,
+            "chief_complaint": "Loose stools, mild fever",
+            "symptoms": "Loose stools x4/day, fever 37.8°C",
+            "diagnosis": "Acute gastroenteritis",
+            "notes": "ORS after every loose stool. Light diet.",
+            "follow_up_date": THREE_FWD,
             "visit_status": "Completed",
-            "created_at": f"{YESTERDAY}T11:00:00+05:30",
+            "created_at": ts(TODAY, "09:45:00"),
         },
-        # V3 — P3 yesterday: WA followup sent, awaiting voice call
+        # Poornima — visited YESTERDAY, WA followup sent, awaiting voice call
         {
-            "id": V3, "patient_id": P3, "doctor_id": DOCTOR_ID, "appointment_id": A3,
+            "id": V_POOR, "patient_id": POOR, "doctor_id": DOCTOR_ID, "appointment_id": A_POOR2,
             "visit_date": YESTERDAY,
-            "chief_complaint": "Knee pain",
+            "chief_complaint": "Knee pain, swelling",
             "diagnosis": "Osteoarthritis right knee",
+            "notes": "Avoid stair climbing. Apply warm compress twice daily.",
             "visit_status": "Completed",
-            "created_at": f"{YESTERDAY}T10:30:00+05:30",
+            "created_at": ts(YESTERDAY, "10:30:00"),
         },
-        # V4 — P4 TODAY → triggers visit summary tonight
+        # Subramaniam — visited 7 DAYS AGO → triggers Google review job today
         {
-            "id": V4, "patient_id": P4, "doctor_id": DOCTOR_ID, "appointment_id": A4,
-            "visit_date": TODAY,
-            "chief_complaint": "Cough, cold",
-            "diagnosis": "Upper Respiratory Infection",
-            "notes": "Avoid cold drinks. Steam inhalation twice daily.",
-            "follow_up_date": THREE_DAYS,
-            "visit_status": "Completed",
-            "created_at": f"{TODAY}T11:30:00+05:30",
-        },
-        # V5 — P5 SEVEN DAYS AGO → triggers Google review today
-        {
-            "id": V5, "patient_id": P5, "doctor_id": DOCTOR_ID, "appointment_id": A5,
+            "id": V_SUBR, "patient_id": SUBR, "doctor_id": DOCTOR_ID, "appointment_id": A_SUBR,
             "visit_date": SEVEN_AGO,
-            "chief_complaint": "Back pain",
-            "diagnosis": "Lumbar muscle strain",
+            "chief_complaint": "BP check, dizziness",
+            "diagnosis": "Hypertension Grade 1",
+            "notes": "Low salt diet. Monitor BP daily. Follow up in 1 week.",
             "visit_status": "Completed",
-            "created_at": f"{SEVEN_AGO}T10:00:00+05:30",
+            "created_at": ts(SEVEN_AGO, "10:00:00"),
         },
-        # V6 — P6 today: query-related visit
+        # Selvarani — visited today → visit summary tonight + query
         {
-            "id": V6, "patient_id": P6, "doctor_id": DOCTOR_ID, "appointment_id": A6,
+            "id": V_SELV, "patient_id": SELV, "doctor_id": DOCTOR_ID, "appointment_id": A_SELV,
             "visit_date": TODAY,
-            "chief_complaint": "Loose stools, stomach pain",
-            "diagnosis": "Gastroenteritis",
+            "chief_complaint": "Sore throat, mild cough",
+            "diagnosis": "Acute pharyngitis",
+            "notes": "Warm water gargles. Steam inhalation. Avoid cold drinks.",
+            "follow_up_date": THREE_FWD,
             "visit_status": "Completed",
-            "created_at": f"{TODAY}T09:00:00+05:30",
+            "created_at": ts(TODAY, "09:00:00"),
         },
     ]
     supabase.table("visits").insert(rows).execute()
@@ -271,37 +261,37 @@ def seed_visits():
 
 def seed_prescriptions():
     rows = [
-        # RX1 — P1: ACTIVE 5-day course starting today → morning + evening reminders
+        # Sujaikumar — ACTIVE 5-day course starting today → morning + evening reminders
         {
-            "id": RX1, "patient_id": P1, "doctor_id": DOCTOR_ID, "visit_id": V1,
+            "id": RX_SUJAI, "patient_id": SUJAI, "doctor_id": DOCTOR_ID, "visit_id": V_SUJAI,
             "prescription_date": TODAY,
-            "dietary_instructions": "Avoid oily food. Drink ORS if needed.",
-            "precautions": "Rest. Avoid exposure to cold.",
+            "dietary_instructions": "Avoid oily/spicy food. Drink warm water.",
+            "precautions": "Rest at home. Avoid exposure to rain.",
             "general_notes": "Review after 3 days if fever persists.",
             "followup_whatsapp_sent": False, "followup_replied": False, "followup_call_sent": False,
         },
-        # RX2 — P2: 3-day course started 3 days ago → ENDED YESTERDAY → followup WA today
+        # Dhanvanth — 3-day course starts today → followup WA scheduled today (immediate test)
         {
-            "id": RX2, "patient_id": P2, "doctor_id": DOCTOR_ID, "visit_id": V2,
-            "prescription_date": ist_days_ago(3).isoformat(),
-            "dietary_instructions": "Warm water gargles. Avoid cold drinks.",
+            "id": RX_DHAN, "patient_id": DHAN, "doctor_id": DOCTOR_ID, "visit_id": V_DHAN,
+            "prescription_date": TODAY,
+            "dietary_instructions": "ORS after each loose stool. Rice kanji. Avoid dairy.",
             "followup_whatsapp_sent": False, "followup_replied": False, "followup_call_sent": False,
         },
-        # RX3 — P3: WA followup SENT, no reply → voice call pending
+        # Poornima — WA followup already SENT, no reply → voice call pending
         {
-            "id": RX3, "patient_id": P3, "doctor_id": DOCTOR_ID, "visit_id": V3,
+            "id": RX_POOR, "patient_id": POOR, "doctor_id": DOCTOR_ID, "visit_id": V_POOR,
             "prescription_date": YESTERDAY,
-            "dietary_instructions": "Apply warm compress.",
+            "dietary_instructions": "Apply warm compress. Avoid prolonged standing.",
             "followup_whatsapp_sent": True,
-            "followup_whatsapp_sent_at": f"{YESTERDAY}T08:00:00+05:30",
+            "followup_whatsapp_sent_at": ts(YESTERDAY, "08:00:00"),
             "followup_replied": False,
             "followup_call_sent": False,
         },
-        # RX4 — P4: prescription today (visit summary patient)
+        # Selvarani — prescription today
         {
-            "id": RX4, "patient_id": P4, "doctor_id": DOCTOR_ID, "visit_id": V4,
+            "id": RX_SELV, "patient_id": SELV, "doctor_id": DOCTOR_ID, "visit_id": V_SELV,
             "prescription_date": TODAY,
-            "dietary_instructions": "Steam inhalation. Warm soups.",
+            "dietary_instructions": "Warm soups. Honey + ginger for throat.",
             "precautions": "Avoid cold drinks and ice cream.",
             "followup_whatsapp_sent": False, "followup_replied": False, "followup_call_sent": False,
         },
@@ -312,23 +302,48 @@ def seed_prescriptions():
 
 def seed_prescription_medicines():
     rows = [
-        # RX1 — P1 active medicines (morning + afternoon + night → both reminder jobs)
-        {"prescription_id": RX1, "medicine_name": "Paracetamol 650mg",   "dosage": "1 tablet", "morning": True,  "afternoon": True,  "evening": False, "night": True,  "before_food": False, "duration_days": 5, "sort_order": 1},
-        {"prescription_id": RX1, "medicine_name": "Cetirizine 10mg",     "dosage": "1 tablet", "morning": False, "afternoon": False, "evening": False, "night": True,  "before_food": False, "duration_days": 5, "sort_order": 2},
-        {"prescription_id": RX1, "medicine_name": "ORS Sachet",          "dosage": "1 sachet", "morning": True,  "afternoon": True,  "evening": True,  "night": False, "before_food": False, "duration_days": 3, "sort_order": 3},
+        # Sujaikumar — Paracetamol M+A+N (5 days), Cetirizine N (5 days), ORS M+A+E (3 days)
+        # → morning reminder: Paracetamol + ORS
+        # → evening reminder: Paracetamol + Cetirizine (night meds)
+        {"prescription_id": RX_SUJAI, "medicine_name": "Paracetamol 650mg", "dosage": "1 tablet",
+         "morning": True,  "afternoon": True,  "evening": False, "night": True,
+         "before_food": False, "duration_days": 5, "sort_order": 1},
+        {"prescription_id": RX_SUJAI, "medicine_name": "Cetirizine 10mg",   "dosage": "1 tablet",
+         "morning": False, "afternoon": False, "evening": False, "night": True,
+         "before_food": False, "duration_days": 5, "sort_order": 2},
+        {"prescription_id": RX_SUJAI, "medicine_name": "ORS Sachet",        "dosage": "1 sachet in 200ml water",
+         "morning": True,  "afternoon": True,  "evening": True,  "night": False,
+         "before_food": False, "duration_days": 3, "sort_order": 3},
 
-        # RX2 — P2 ended medicines (3-day course, started 3 days ago → ended yesterday)
-        {"prescription_id": RX2, "medicine_name": "Azithromycin 500mg",  "dosage": "1 tablet", "morning": True,  "afternoon": False, "evening": False, "night": False, "before_food": False, "duration_days": 3, "sort_order": 1},
-        {"prescription_id": RX2, "medicine_name": "Ibuprofen 400mg",     "dosage": "1 tablet", "morning": True,  "afternoon": True,  "evening": False, "night": False, "before_food": True,  "duration_days": 3, "sort_order": 2},
+        # Dhanvanth — ORS M+A+E (3 days), Zinc M (14 days), Norflox-TZ M+N (3 days)
+        {"prescription_id": RX_DHAN, "medicine_name": "ORS Sachet",     "dosage": "1 sachet in 200ml",
+         "morning": True,  "afternoon": True,  "evening": True,  "night": False,
+         "before_food": False, "duration_days": 3, "sort_order": 1},
+        {"prescription_id": RX_DHAN, "medicine_name": "Zinc 20mg",      "dosage": "1 tablet",
+         "morning": True,  "afternoon": False, "evening": False, "night": False,
+         "before_food": False, "duration_days": 14, "sort_order": 2},
+        {"prescription_id": RX_DHAN, "medicine_name": "Norflox-TZ",     "dosage": "1 tablet",
+         "morning": True,  "afternoon": False, "evening": False, "night": True,
+         "before_food": True,  "duration_days": 3, "sort_order": 3},
 
-        # RX3 — P3 (voice call patient)
-        {"prescription_id": RX3, "medicine_name": "Diclofenac 50mg",     "dosage": "1 tablet", "morning": True,  "afternoon": False, "evening": False, "night": True,  "before_food": True,  "duration_days": 5, "sort_order": 1},
-        {"prescription_id": RX3, "medicine_name": "Rabeprazole 20mg",    "dosage": "1 tablet", "morning": True,  "afternoon": False, "evening": False, "night": False, "before_food": True,  "duration_days": 5, "sort_order": 2},
+        # Poornima — Diclofenac M+N (5 days), Rabeprazole M (5 days)
+        {"prescription_id": RX_POOR, "medicine_name": "Diclofenac 50mg",  "dosage": "1 tablet",
+         "morning": True,  "afternoon": False, "evening": False, "night": True,
+         "before_food": True,  "duration_days": 5, "sort_order": 1},
+        {"prescription_id": RX_POOR, "medicine_name": "Rabeprazole 20mg", "dosage": "1 tablet",
+         "morning": True,  "afternoon": False, "evening": False, "night": False,
+         "before_food": True,  "duration_days": 5, "sort_order": 2},
 
-        # RX4 — P4 medicines (visit summary patient)
-        {"prescription_id": RX4, "medicine_name": "Amoxicillin 500mg",   "dosage": "1 capsule","morning": True,  "afternoon": False, "evening": False, "night": True,  "before_food": False, "duration_days": 5, "sort_order": 1},
-        {"prescription_id": RX4, "medicine_name": "Bromhexine syrup",    "dosage": "10ml",     "morning": True,  "afternoon": True,  "evening": False, "night": False, "before_food": False, "duration_days": 5, "sort_order": 2},
-        {"prescription_id": RX4, "medicine_name": "Vitamin C 500mg",     "dosage": "1 tablet", "morning": True,  "afternoon": False, "evening": False, "night": False, "before_food": False, "duration_days": 5, "sort_order": 3},
+        # Selvarani — Azithromycin M (5 days), Cetirizine N (5 days), Montelukast N (5 days)
+        {"prescription_id": RX_SELV, "medicine_name": "Azithromycin 500mg", "dosage": "1 tablet",
+         "morning": True,  "afternoon": False, "evening": False, "night": False,
+         "before_food": False, "duration_days": 5, "sort_order": 1},
+        {"prescription_id": RX_SELV, "medicine_name": "Cetirizine 10mg",   "dosage": "1 tablet",
+         "morning": False, "afternoon": False, "evening": False, "night": True,
+         "before_food": False, "duration_days": 5, "sort_order": 2},
+        {"prescription_id": RX_SELV, "medicine_name": "Montelukast 10mg",  "dosage": "1 tablet",
+         "morning": False, "afternoon": False, "evening": False, "night": True,
+         "before_food": False, "duration_days": 5, "sort_order": 3},
     ]
     supabase.table("prescription_medicines").insert(rows).execute()
     print(f"   ✓ prescription_medicines ({len(rows)} rows)")
@@ -336,29 +351,21 @@ def seed_prescription_medicines():
 
 def seed_followups():
     rows = [
-        # FU1 — P2 followup scheduled TODAY → triggers followup_whatsapp_job
+        # Dhanvanth — followup scheduled TODAY → triggers followup_whatsapp_job
         {
-            "id": FU1,
-            "patient_id": P2, "doctor_id": DOCTOR_ID, "visit_id": V2,
-            "followup_day": 1, "scheduled_date": TODAY,
-            "channel": "whatsapp", "call_status": "Pending",
-            "created_at": f"{YESTERDAY}T11:00:00+05:30",
-        },
-        # Also one overdue from yesterday (scheduled_date <= today also picks this up)
-        {
-            "id": "eeeeeeee-0003-0003-0003-000000000003",
-            "patient_id": P4, "doctor_id": DOCTOR_ID, "visit_id": V4,
+            "id": FU_DHAN,
+            "patient_id": DHAN, "doctor_id": DOCTOR_ID, "visit_id": V_DHAN,
             "followup_day": 3, "scheduled_date": TODAY,
             "channel": "whatsapp", "call_status": "Pending",
-            "created_at": f"{TODAY}T11:30:00+05:30",
+            "created_at": ts(TODAY, "09:45:00"),
         },
-        # FU2 — P6 followup 3 days from now (future, should NOT trigger today)
+        # Selvarani — followup 3 days from now (future, must NOT trigger today)
         {
-            "id": FU2,
-            "patient_id": P6, "doctor_id": DOCTOR_ID, "visit_id": V6,
-            "followup_day": 3, "scheduled_date": THREE_DAYS,
+            "id": FU_SELV,
+            "patient_id": SELV, "doctor_id": DOCTOR_ID, "visit_id": V_SELV,
+            "followup_day": 3, "scheduled_date": THREE_FWD,
             "channel": "whatsapp", "call_status": "Pending",
-            "created_at": f"{TODAY}T09:00:00+05:30",
+            "created_at": ts(TODAY, "09:00:00"),
         },
     ]
     supabase.table("followups").insert(rows).execute()
@@ -367,33 +374,35 @@ def seed_followups():
 
 def seed_queries():
     rows = [
-        # Q1 — P6 PENDING query (shows in Queries page, doctor hasn't replied)
+        # Selvarani — PENDING query (doctor hasn't replied yet)
         {
-            "id": Q1, "patient_id": P6, "doctor_id": DOCTOR_ID, "visit_id": V6,
-            "question": "Doctor, my stomach pain has reduced but I still have loose stools on day 2. Should I continue the same medicines?",
+            "id": Q_SELV_PENDING,
+            "patient_id": SELV, "doctor_id": DOCTOR_ID, "visit_id": V_SELV,
+            "question": "Doctor, my throat pain has reduced a little but I still have difficulty swallowing. Is this normal on day 1?",
             "question_source": "whatsapp",
             "status": "Pending",
-            "created_at": f"{TODAY}T14:00:00+05:30",
+            "created_at": ts(TODAY, "14:00:00"),
         },
-        # Q2 — P6 CLOSED/ANSWERED query (shows in answered section)
+        # Selvarani — CLOSED/ANSWERED query
         {
-            "id": Q2, "patient_id": P6, "doctor_id": DOCTOR_ID, "visit_id": V6,
-            "question": "Is ORS safe for adults?",
+            "id": Q_SELV_CLOSED,
+            "patient_id": SELV, "doctor_id": DOCTOR_ID, "visit_id": V_SELV,
+            "question": "Can I take warm milk with honey for throat pain?",
             "question_source": "whatsapp",
-            "reply": "Yes, ORS is safe for all ages. Drink 200-400ml after each loose stool. Stay hydrated.",
+            "reply": "Yes, warm milk with honey is very good for throat pain. Have it at night before sleep. Avoid cold milk.",
             "replied_by": DOCTOR_ID,
             "status": "Closed",
-            "created_at": f"{TODAY}T12:00:00+05:30",
-            "replied_at": f"{TODAY}T13:00:00+05:30",
+            "created_at": ts(TODAY, "11:00:00"),
+            "replied_at": ts(TODAY, "12:30:00"),
         },
-        # Bonus — P1 (Arjun) asking about fever
+        # Sujaikumar — PENDING query (fever followup)
         {
-            "id": "ffffffff-0003-0003-0003-000000000003",
-            "patient_id": P1, "doctor_id": DOCTOR_ID, "visit_id": V1,
-            "question": "Fever came back at night to 39°C. Should I come in tomorrow?",
+            "id": Q_SUJAI_PENDING,
+            "patient_id": SUJAI, "doctor_id": DOCTOR_ID, "visit_id": V_SUJAI,
+            "question": "Fever came back at night to 39°C. I gave Paracetamol. Should I come in tomorrow or continue medicines?",
             "question_source": "whatsapp",
             "status": "Pending",
-            "created_at": f"{TODAY}T20:00:00+05:30",
+            "created_at": ts(TODAY, "21:00:00"),
         },
     ]
     supabase.table("queries").insert(rows).execute()
@@ -402,11 +411,11 @@ def seed_queries():
 
 def seed_reviews():
     rows = [
-        # P5 visited 7 days ago — google_review_link_sent=False → triggers review job
+        # Subramaniam visited 7 days ago → Google review job sends link today
         {
-            "patient_id": P5, "doctor_id": DOCTOR_ID, "visit_id": V5,
+            "patient_id": SUBR, "doctor_id": DOCTOR_ID, "visit_id": V_SUBR,
             "google_review_link_sent": False,
-            "created_at": f"{SEVEN_AGO}T10:00:00+05:30",
+            "created_at": ts(SEVEN_AGO, "10:00:00"),
         },
     ]
     supabase.table("reviews").insert(rows).execute()
@@ -415,32 +424,27 @@ def seed_reviews():
 
 def seed_conversation_state():
     rows = [
-        # P1's mobile in idle state (ready for WhatsApp menu interactions)
-        {
-            "mobile": TEST_MOBILE,
-            "state": "idle",
-            "temp_data": {},
-            "updated_at": f"{TODAY}T08:00:00+05:30",
-        },
+        {"mobile": "919047099959", "state": "idle", "temp_data": {}, "updated_at": ts(TODAY, "08:00:00")},
+        {"mobile": "919943941314", "state": "idle", "temp_data": {}, "updated_at": ts(TODAY, "08:00:00")},
+        {"mobile": "919965553323", "state": "idle", "temp_data": {}, "updated_at": ts(TODAY, "08:00:00")},
+        {"mobile": "919047099979", "state": "idle", "temp_data": {}, "updated_at": ts(TODAY, "08:00:00")},
     ]
-    # Use upsert — a DB trigger may recreate rows on patient insert
     supabase.table("conversation_state").upsert(rows, on_conflict="mobile").execute()
-    print("   ✓ conversation_state (1 row, idle)")
+    print(f"   ✓ conversation_state ({len(rows)} rows, all idle)")
 
 
 # ── Runner ──────────────────────────────────────────────────────────────
 
 def main():
-    print(f"\n{'='*60}")
+    print(f"\n{'='*65}")
     print(f"  PRA Test Data Seed")
-    print(f"  Doctor:  Dr. Kumar ({DOCTOR_ID[:8]}...)")
-    print(f"  Mobile:  +{TEST_MOBILE}")
-    print(f"  Today:   {TODAY}")
-    print(f"{'='*60}\n")
+    print(f"  Doctor : Dr. Kumar  ({DOCTOR_ID[:8]}...)")
+    print(f"  Today  : {TODAY}")
+    print(f"{'='*65}\n")
 
     wipe_all()
     print()
-    print("🌱 Seeding test data...")
+    print("🌱 Seeding 5 patients + all test data...")
 
     seed_patients()
     seed_appointments()
@@ -454,45 +458,42 @@ def main():
     seed_conversation_state()
 
     print()
-    print("✅ Seed complete!")
+    print("✅ Seed complete!\n")
+    print("📋 Patients & flows:")
     print()
-    print("📋 What each job will find when triggered:")
+    print(f"  👨 Sujaikumar  (SUJ-9959-1983)  +91 90470 99959  — token 1 → Done")
+    print(f"     🌅 morning reminder  : Paracetamol M+A+N, Cetirizine N, ORS M+A+E")
+    print(f"     🌙 evening reminder  : Paracetamol N + Cetirizine N")
+    print(f"     💬 pending query     : fever came back at night")
     print()
-    print(f"  🌅 /trigger/morning-reminders")
-    print(f"     → Arjun Kumar  (Paracetamol M+A+N, Cetirizine N, ORS M+A+E) — 5-day course Day 1")
-    print(f"     → Priya Nair   — course ended, skipped")
+    print(f"  👦 Dhanvanth   (DHA-9959-2013)  +91 90470 99959  — token 2 → In Progress (family son)")
+    print(f"     💬 followup WhatsApp : scheduled today → triggers /trigger/followup-whatsapp")
+    print(f"     💊 medicines         : ORS M+A+E, Zinc M, Norflox-TZ M+N")
     print()
-    print(f"  🌙 /trigger/evening-reminders")
-    print(f"     → Arjun Kumar  (Paracetamol N, Cetirizine N) — night medicines only")
+    print(f"  👩 Poornima    (POO-1314-1983)  +91 99439 41314  — token 4 → Waiting")
+    print(f"     📞 voice call        : WA followup sent, no reply → /trigger/followup-calls")
     print()
-    print(f"  🏥 /trigger/visit-summary")
-    print(f"     → Arjun Kumar  (Viral fever, follow-up {THREE_DAYS})")
-    print(f"     → Meena Devi   (Upper Respiratory Infection, follow-up {THREE_DAYS})")
-    print(f"       ⚠ visit_date=today + visit_status=Completed required")
+    print(f"  👴 Subramaniam (SUB-3323-1955)  +91 99655 53323  — (visited {SEVEN_AGO})")
+    print(f"     ⭐ Google review     : visit 7 days ago → /trigger/review-requests")
     print()
-    print(f"  💬 /trigger/followup-whatsapp")
-    print(f"     → Priya Nair   (followups row, scheduled_date={TODAY}, Pending)")
-    print(f"     → Meena Devi   (followups row, scheduled_date={TODAY}, Pending)")
+    print(f"  👩 Selvarani   (SEL-9979-1965)  +91 90470 99979  — token 3 → Waiting")
+    print(f"     🏥 visit summary     : visited today → /trigger/visit-summary")
+    print(f"     💬 pending query     : throat pain day 1")
+    print(f"     ✅ answered query    : warm milk with honey?")
     print()
-    print(f"  📞 /trigger/followup-calls")
-    print(f"     → Ravi Sharma  (RX3: WA sent, no reply, call not sent)")
+    print(f"📱 WhatsApp tests:")
+    print(f"   Send to +91 90470 99959 → MENU → family selector shows Sujaikumar + Dhanvanth")
+    print(f"   Send 7 → ask doctor → pick patient → type question")
+    print(f"   Send 2 → token check → 'Token 1 is being seen now'")
     print()
-    print(f"  ⭐ /trigger/review-requests")
-    print(f"     → Suresh Babu  (visit created_at={SEVEN_AGO})")
-    print()
-    print(f"  💬 Queries page")
-    print(f"     Pending  : Lakshmi S  — 'stomach pain/loose stools day 2...'")
-    print(f"     Pending  : Arjun Kumar — 'Fever came back at night...'")
-    print(f"     Answered : Lakshmi S  — 'Is ORS safe for adults?' → doctor replied")
-    print()
-    print(f"  📱 WhatsApp (send to +{TEST_MOBILE})")
-    print(f"     MENU        → main menu")
-    print(f"     1           → book appointment")
-    print(f"     2           → check token")
-    print(f"     3           → prescription")
-    print(f"     7           → ask doctor (family selector: Arjun + Ariya)")
-    print()
-    print(f"{'='*60}\n")
+    print(f"🚀 Trigger jobs:")
+    print(f"   curl -X POST https://web-production-e5f38.up.railway.app/trigger/morning-reminders")
+    print(f"   curl -X POST https://web-production-e5f38.up.railway.app/trigger/evening-reminders")
+    print(f"   curl -X POST https://web-production-e5f38.up.railway.app/trigger/visit-summary")
+    print(f"   curl -X POST https://web-production-e5f38.up.railway.app/trigger/followup-whatsapp")
+    print(f"   curl -X POST https://web-production-e5f38.up.railway.app/trigger/followup-calls")
+    print(f"   curl -X POST https://web-production-e5f38.up.railway.app/trigger/review-requests")
+    print(f"\n{'='*65}\n")
 
 
 if __name__ == "__main__":
