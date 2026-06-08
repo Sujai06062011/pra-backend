@@ -386,14 +386,14 @@ async def list_followups(doctor_id: str):
 async def pending_queries(doctor_id: str):
     from database import supabase
     # table is "queries", not "patient_queries"
-    result = supabase.table("queries").select("*, patients(name, mobile)").eq("doctor_id", doctor_id).eq("status", "Pending").order("created_at", desc=True).execute()
+    result = supabase.table("queries").select("*, patients(name, mobile, patient_code, age, gender, language, created_at)").eq("doctor_id", doctor_id).eq("status", "Pending").order("created_at", desc=True).execute()
     return result.data or []
 
 
 @app.get("/queries")
 async def list_queries(doctor_id: str):
     from database import supabase
-    result = supabase.table("queries").select("*, patients(name, mobile)").eq("doctor_id", doctor_id).order("created_at", desc=True).execute()
+    result = supabase.table("queries").select("*, patients(name, mobile, patient_code, age, gender, language, created_at)").eq("doctor_id", doctor_id).order("created_at", desc=True).execute()
     return result.data or []
 
 
