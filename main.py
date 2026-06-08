@@ -169,9 +169,9 @@ async def dashboard_stats(doctor_id: str):
     today_appts = supabase.table("appointments").select("id", count="exact").eq("doctor_id", doctor_id).eq("appointment_date", today).execute()
     # tokens uses queue_date, not appointment_date
     token_row = supabase.table("tokens").select("current_token").eq("doctor_id", doctor_id).eq("queue_date", today).execute()
-    # patients has no doctor_id — count distinct patients linked via appointments
-    patient_ids = supabase.table("appointments").select("patient_id").eq("doctor_id", doctor_id).execute()
-    total_patients = len(set(r["patient_id"] for r in (patient_ids.data or [])))
+    # patients table has no doctor_id — single-clinic deployment, count all patients
+    all_patients = supabase.table("patients").select("id", count="exact").execute()
+    total_patients = all_patients.count or 0
     # followups table (no underscore), filter by call_status not status
     pending_followups = supabase.table("followups").select("id", count="exact").eq("doctor_id", doctor_id).is_("completed_at", "null").execute()
     today_completed = supabase.table("appointments").select("id", count="exact").eq("doctor_id", doctor_id).eq("appointment_date", today).eq("status", "completed").execute()
@@ -207,12 +207,8 @@ async def dashboard_stats(doctor_id: str):
 @app.get("/patients")
 async def list_patients(doctor_id: str, search: str = ""):
     from database import supabase
-    # patients has no doctor_id; get patient_ids linked to this doctor via appointments
-    apt_rows = supabase.table("appointments").select("patient_id").eq("doctor_id", doctor_id).execute()
-    patient_ids = list(set(r["patient_id"] for r in (apt_rows.data or [])))
-    if not patient_ids:
-        return []
-    q = supabase.table("patients").select("*").in_("id", patient_ids)
+    # patients table has no doctor_id — single-clinic deployment, return all patients
+    q = supabase.table("patients").select("*")
     if search:
         q = q.or_(f"name.ilike.%{search}%,mobile.ilike.%{search}%")
     result = q.order("created_at", desc=True).execute()
