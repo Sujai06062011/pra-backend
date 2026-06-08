@@ -296,7 +296,10 @@ async def queue_next(request: Request):
     today = dt.date.today().isoformat()
     token_row = supabase.table("tokens").select("current_token").eq("doctor_id", doctor_id).eq("queue_date", today).execute()
     new_token = (token_row.data[0]["current_token"] if token_row.data else 0) + 1
-    supabase.table("tokens").upsert({"doctor_id": doctor_id, "queue_date": today, "current_token": new_token}, on_conflict="doctor_id,queue_date").execute()
+    if token_row.data:
+        supabase.table("tokens").update({"current_token": new_token}).eq("doctor_id", doctor_id).eq("queue_date", today).execute()
+    else:
+        supabase.table("tokens").insert({"doctor_id": doctor_id, "queue_date": today, "current_token": new_token}).execute()
     return {"token": new_token}
 
 
@@ -310,7 +313,10 @@ async def queue_prev(request: Request):
     token_row = supabase.table("tokens").select("current_token").eq("doctor_id", doctor_id).eq("queue_date", today).execute()
     current = token_row.data[0]["current_token"] if token_row.data else 1
     new_token = max(1, current - 1)
-    supabase.table("tokens").upsert({"doctor_id": doctor_id, "queue_date": today, "current_token": new_token}, on_conflict="doctor_id,queue_date").execute()
+    if token_row.data:
+        supabase.table("tokens").update({"current_token": new_token}).eq("doctor_id", doctor_id).eq("queue_date", today).execute()
+    else:
+        supabase.table("tokens").insert({"doctor_id": doctor_id, "queue_date": today, "current_token": new_token}).execute()
     return {"token": new_token}
 
 
@@ -322,7 +328,11 @@ async def queue_set_token(request: Request):
     doctor_id = body["doctor_id"]
     token = body["token"]
     today = dt.date.today().isoformat()
-    supabase.table("tokens").upsert({"doctor_id": doctor_id, "queue_date": today, "current_token": token}, on_conflict="doctor_id,queue_date").execute()
+    token_row = supabase.table("tokens").select("current_token").eq("doctor_id", doctor_id).eq("queue_date", today).execute()
+    if token_row.data:
+        supabase.table("tokens").update({"current_token": token}).eq("doctor_id", doctor_id).eq("queue_date", today).execute()
+    else:
+        supabase.table("tokens").insert({"doctor_id": doctor_id, "queue_date": today, "current_token": token}).execute()
     return {"token": token}
 
 
