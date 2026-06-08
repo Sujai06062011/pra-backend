@@ -401,10 +401,11 @@ async def answer_query(query_id: str, request: Request):
     import datetime as dt
     body = await request.json()
     reply_text = body["answer"]
-    # replied_by is a UUID column — fetch doctor_id and patient_id from the query row
-    q_row = supabase.table("queries").select("doctor_id, patient_id").eq("id", query_id).execute()
+    # replied_by is a UUID column — fetch doctor_id, patient_id and original question
+    q_row = supabase.table("queries").select("doctor_id, patient_id, question").eq("id", query_id).execute()
     doctor_id = q_row.data[0]["doctor_id"] if q_row.data else None
     patient_id = q_row.data[0]["patient_id"] if q_row.data else None
+    question_text = q_row.data[0]["question"] if q_row.data else ""
     update = {
         "reply": reply_text,
         "status": "Closed",
@@ -422,8 +423,8 @@ async def answer_query(query_id: str, request: Request):
             if mobile:
                 msg = (
                     f"👨‍⚕️ *Dr. Kumar Child Care Clinic*\n\n"
-                    f"Dr. Kumar has replied to your query:\n\n"
-                    f"_{reply_text}_\n\n"
+                    f"*Your question:*\n_{question_text}_\n\n"
+                    f"*Dr. Kumar's reply:*\n_{reply_text}_\n\n"
                     f"For appointments reply MENU"
                 )
                 send_whatsapp(mobile, msg)
