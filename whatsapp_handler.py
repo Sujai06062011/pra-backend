@@ -69,7 +69,8 @@ def build_main_menu(patient_name: str, clinic_name: str) -> str:
         f"3. Cancel Appointment\n"
         f"4. Clinic Timings\n"
         f"5. Speak to Receptionist\n"
-        f"6. Book for Family Member\n\n"
+        f"6. Book for Family Member\n"
+        f"7. Ask Doctor a Question\n\n"
         f"Reply with a number."
         + MENU_HINT
     )
@@ -151,6 +152,8 @@ async def handle_message(from_number: str, text: str, to_number: str, media_url:
         intent = "family_dob_provided"
     elif current_state == "awaiting_family_gender":
         intent = "family_gender_provided"
+    elif current_state == "awaiting_query":
+        intent = "query_text_provided"
     elif media_url:
         intent = "media"
     elif t == "1" or any(k in t for k in ["book", "appointment"]):
@@ -165,6 +168,8 @@ async def handle_message(from_number: str, text: str, to_number: str, media_url:
         intent = "speak"
     elif t == "6" or "family" in t:
         intent = "family"
+    elif t == "7" or any(k in t for k in ["ask", "question", "query"]):
+        intent = "ask_question"
     elif t in ["hi", "hello", "hey", "start", "help"]:
         intent = "menu"
 
@@ -458,6 +463,34 @@ async def handle_message(from_number: str, text: str, to_number: str, media_url:
             f"Clinic hours: {clinic_timings}\n\n"
             f"Alternatively reply 1 to book online."
             + MENU_HINT
+        )
+        new_state = "idle"
+
+    # ── ASK DOCTOR A QUESTION ─────────────────────────────────
+    elif intent == "ask_question":
+        reply = (
+            "Please type your question for Dr. Kumar.\n\n"
+            "Our doctor will reply within a few hours. 💬"
+        )
+        new_state = "awaiting_query"
+
+    elif intent == "query_text_provided":
+        try:
+            from database import supabase as _supa
+            import datetime as _dt
+            _supa.table("queries").insert({
+                "patient_id": patient_id,
+                "doctor_id": doctor_id,
+                "question": text,
+                "status": "Pending",
+                "created_at": _dt.datetime.utcnow().isoformat(),
+            }).execute()
+        except Exception as _e:
+            print(f"❌ Failed to save query: {_e}")
+        reply = (
+            "✅ Your question has been sent to Dr. Kumar!\n\n"
+            "You'll receive a reply on WhatsApp within a few hours.\n\n"
+            "Reply MENU for main menu."
         )
         new_state = "idle"
 

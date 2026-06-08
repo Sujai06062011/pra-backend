@@ -243,9 +243,11 @@ async def today_appointments(doctor_id: str):
 
 
 @app.get("/appointments")
-async def list_appointments(doctor_id: str, date: str = "", date_from: str = "", date_to: str = ""):
+async def list_appointments(doctor_id: str, date: str = "", date_from: str = "", date_to: str = "", patient_id: str = ""):
     from database import supabase
     q = supabase.table("appointments").select("*, patients(*)").eq("doctor_id", doctor_id)
+    if patient_id:
+        q = q.eq("patient_id", patient_id)
     if date:
         q = q.eq("appointment_date", date)
     elif date_from and date_to:
@@ -425,9 +427,10 @@ async def answer_query(query_id: str, request: Request):
                 msg = (
                     f"👨‍⚕️ *Dr. Kumar Child Care Clinic*\n\n"
                     f"Patient: *{patient_code}*\n\n"
-                    f"*Your question:*\n_{question_text}_\n\n"
-                    f"*Dr. Kumar's reply:*\n_{reply_text}_\n\n"
-                    f"For appointments reply MENU"
+                    f"Dr. Kumar has replied to your question:\n\n"
+                    f"*Your question:* _{question_text}_\n"
+                    f"*Dr. Kumar's reply:* _{reply_text}_\n\n"
+                    f"Reply MENU for main menu."
                 )
                 send_whatsapp(mobile, msg)
                 print(f"✅ WhatsApp reply sent for query {query_id} to {mobile}")
