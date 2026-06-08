@@ -380,7 +380,7 @@ def init_scheduler() -> AsyncIOScheduler:
         # Morning reminder - 06:31 PM IST
     scheduler.add_job(
         send_morning_reminders,
-        CronTrigger(hour=20, minute=50, timezone="Asia/Kolkata"),
+        CronTrigger(hour=20, minute=53, timezone="Asia/Kolkata"),
         id="morning_reminders",
         name="Morning Medicine Reminders",
         replace_existing=True
@@ -389,7 +389,7 @@ def init_scheduler() -> AsyncIOScheduler:
     # Evening reminder - 06:32 PM IST
     scheduler.add_job(
         send_evening_reminders,
-        CronTrigger(hour=20, minute=51, timezone="Asia/Kolkata"),
+        CronTrigger(hour=20, minute=53, timezone="Asia/Kolkata"),
         id="evening_reminders",
         name="Evening Night Medicine Reminders",
         replace_existing=True
@@ -398,7 +398,7 @@ def init_scheduler() -> AsyncIOScheduler:
     # Visit summary - 06:30 PM IST
     scheduler.add_job(
         send_visit_summary,
-        CronTrigger(hour=20, minute=52, timezone="Asia/Kolkata"),
+        CronTrigger(hour=20, minute=53, timezone="Asia/Kolkata"),
         id="visit_summary",
         name="Evening Visit Summary",
         replace_existing=True
