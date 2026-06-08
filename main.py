@@ -167,24 +167,27 @@ async def dashboard_stats(doctor_id: str):
     today = date.today().isoformat()
 
     today_appts = supabase.table("appointments").select("id", count="exact").eq("doctor_id", doctor_id).eq("appointment_date", today).execute()
-    token_row = supabase.table("tokens").select("current_token").eq("doctor_id", doctor_id).eq("appointment_date", today).execute()
-    total_patients = supabase.table("patients").select("id", count="exact").eq("doctor_id", doctor_id).execute()
-    pending_followups = supabase.table("follow_ups").select("id", count="exact").eq("doctor_id", doctor_id).eq("status", "pending").execute()
+    # tokens uses queue_date, not appointment_date
+    token_row = supabase.table("tokens").select("current_token").eq("doctor_id", doctor_id).eq("queue_date", today).execute()
+    # patients has no doctor_id — count distinct patients linked via appointments
+    patient_ids = supabase.table("appointments").select("patient_id").eq("doctor_id", doctor_id).execute()
+    total_patients = len(set(r["patient_id"] for r in (patient_ids.data or [])))
+    # followups table (no underscore), filter by call_status not status
+    pending_followups = supabase.table("followups").select("id", count="exact").eq("doctor_id", doctor_id).is_("completed_at", "null").execute()
     today_completed = supabase.table("appointments").select("id", count="exact").eq("doctor_id", doctor_id).eq("appointment_date", today).eq("status", "completed").execute()
 
-    weekly = []
     week_map = defaultdict(int)
     for i in range(6, -1, -1):
-        d = (date.today() - timedelta(days=i)).isoformat()
-        week_map[d] = 0
+        week_map[(date.today() - timedelta(days=i)).isoformat()] = 0
     week_appts = supabase.table("appointments").select("appointment_date").eq("doctor_id", doctor_id).gte("appointment_date", (date.today() - timedelta(days=6)).isoformat()).lte("appointment_date", today).execute()
     for row in (week_appts.data or []):
         week_map[row["appointment_date"]] += 1
     weekly = [{"date": d, "count": c} for d, c in sorted(week_map.items())]
 
-    prescriptions = supabase.table("prescriptions").select("diagnosis").eq("doctor_id", doctor_id).execute()
+    # diagnosis lives in visits table, not prescriptions
+    visits = supabase.table("visits").select("diagnosis").eq("doctor_id", doctor_id).execute()
     diag_map = defaultdict(int)
-    for row in (prescriptions.data or []):
+    for row in (visits.data or []):
         if row.get("diagnosis"):
             diag_map[row["diagnosis"]] += 1
     top_diagnoses = sorted([{"diagnosis": k, "count": v} for k, v in diag_map.items()], key=lambda x: -x["count"])[:5]
@@ -192,7 +195,7 @@ async def dashboard_stats(doctor_id: str):
     return {
         "today_appointments": today_appts.count or 0,
         "current_token": (token_row.data[0]["current_token"] if token_row.data else 0),
-        "total_patients": total_patients.count or 0,
+        "total_patients": total_patients,
         "pending_followups": pending_followups.count or 0,
         "today_completed": today_completed.count or 0,
         "weekly_appointments": weekly,
@@ -204,7 +207,12 @@ async def dashboard_stats(doctor_id: str):
 @app.get("/patients")
 async def list_patients(doctor_id: str, search: str = ""):
     from database import supabase
-    q = supabase.table("patients").select("*").eq("doctor_id", doctor_id)
+    # patients has no doctor_id; get patient_ids linked to this doctor via appointments
+    apt_rows = supabase.table("appointments").select("patient_id").eq("doctor_id", doctor_id).execute()
+    patient_ids = list(set(r["patient_id"] for r in (apt_rows.data or [])))
+    if not patient_ids:
+        return []
+    q = supabase.table("patients").select("*").in_("id", patient_ids)
     if search:
         q = q.or_(f"name.ilike.%{search}%,mobile.ilike.%{search}%")
     result = q.order("created_at", desc=True).execute()
@@ -256,14 +264,16 @@ async def update_appointment_status(appointment_id: str, request: Request):
 @app.get("/queue/status")
 async def queue_status(doctor_id: str, date: str = ""):
     from database import supabase
-    d = date or str(date.today()) if False else (date if date else str(__import__("datetime").date.today()))
-    token_row = supabase.table("tokens").select("current_token").eq("doctor_id", doctor_id).eq("appointment_date", d).execute()
+    import datetime as dt
+    d = date if date else dt.date.today().isoformat()
+    # tokens uses queue_date
+    token_row = supabase.table("tokens").select("current_token").eq("doctor_id", doctor_id).eq("queue_date", d).execute()
     current = token_row.data[0]["current_token"] if token_row.data else 0
 
     total = supabase.table("appointments").select("id", count="exact").eq("doctor_id", doctor_id).eq("appointment_date", d).execute()
     completed = supabase.table("appointments").select("id", count="exact").eq("doctor_id", doctor_id).eq("appointment_date", d).eq("status", "completed").execute()
     appts = supabase.table("appointments").select("*, patients(*)").eq("doctor_id", doctor_id).eq("appointment_date", d).order("token_number", desc=False).execute()
-    waiting = [a for a in (appts.data or []) if a.get("status") == "scheduled" and (a.get("token_number") or 0) >= current]
+    waiting = [a for a in (appts.data or []) if a.get("status") not in ("completed", "cancelled") and (a.get("token_number") or 0) >= current]
 
     return {
         "current_token": current,
@@ -277,23 +287,25 @@ async def queue_status(doctor_id: str, date: str = ""):
 @app.post("/queue/next")
 async def queue_next(request: Request):
     from database import supabase
+    import datetime as dt
     body = await request.json()
     doctor_id = body["doctor_id"]
-    today = str(__import__("datetime").date.today())
-    token_row = supabase.table("tokens").select("current_token").eq("doctor_id", doctor_id).eq("appointment_date", today).execute()
+    today = dt.date.today().isoformat()
+    token_row = supabase.table("tokens").select("current_token").eq("doctor_id", doctor_id).eq("queue_date", today).execute()
     new_token = (token_row.data[0]["current_token"] if token_row.data else 0) + 1
-    supabase.table("tokens").upsert({"doctor_id": doctor_id, "appointment_date": today, "current_token": new_token}, on_conflict="doctor_id,appointment_date").execute()
+    supabase.table("tokens").upsert({"doctor_id": doctor_id, "queue_date": today, "current_token": new_token}, on_conflict="doctor_id,queue_date").execute()
     return {"token": new_token}
 
 
 @app.post("/queue/set-token")
 async def queue_set_token(request: Request):
     from database import supabase
+    import datetime as dt
     body = await request.json()
     doctor_id = body["doctor_id"]
     token = body["token"]
-    today = str(__import__("datetime").date.today())
-    supabase.table("tokens").upsert({"doctor_id": doctor_id, "appointment_date": today, "current_token": token}, on_conflict="doctor_id,appointment_date").execute()
+    today = dt.date.today().isoformat()
+    supabase.table("tokens").upsert({"doctor_id": doctor_id, "queue_date": today, "current_token": token}, on_conflict="doctor_id,queue_date").execute()
     return {"token": token}
 
 
@@ -301,15 +313,15 @@ async def queue_set_token(request: Request):
 @app.get("/prescriptions/active")
 async def active_prescriptions(doctor_id: str):
     from database import supabase
-    today = str(__import__("datetime").date.today())
-    result = supabase.table("prescriptions").select("*, patients(name, mobile, patient_code)").eq("doctor_id", doctor_id).eq("is_active", True).gte("end_date", today).order("created_at", desc=True).execute()
+    # prescriptions joins via visit_id → visits; filter by doctor_id directly on prescriptions
+    result = supabase.table("prescriptions").select("*, patients(name, mobile, patient_code), prescription_medicines(*)").eq("doctor_id", doctor_id).order("created_at", desc=True).execute()
     return result.data or []
 
 
 @app.get("/prescriptions")
 async def list_prescriptions(doctor_id: str, patient_id: str = ""):
     from database import supabase
-    q = supabase.table("prescriptions").select("*, patients(name, mobile, patient_code)").eq("doctor_id", doctor_id)
+    q = supabase.table("prescriptions").select("*, patients(name, mobile, patient_code), prescription_medicines(*)").eq("doctor_id", doctor_id)
     if patient_id:
         q = q.eq("patient_id", patient_id)
     result = q.order("created_at", desc=True).execute()
@@ -328,14 +340,15 @@ async def create_prescription(request: Request):
 @app.get("/followups/pending")
 async def pending_followups(doctor_id: str):
     from database import supabase
-    result = supabase.table("follow_ups").select("*, patients(name, mobile, language)").eq("doctor_id", doctor_id).eq("status", "pending").order("created_at", desc=True).execute()
+    # followups table (no underscore); pending = completed_at is null
+    result = supabase.table("followups").select("*, patients(name, mobile, language)").eq("doctor_id", doctor_id).is_("completed_at", "null").order("created_at", desc=True).execute()
     return result.data or []
 
 
 @app.get("/followups")
 async def list_followups(doctor_id: str):
     from database import supabase
-    result = supabase.table("follow_ups").select("*, patients(name, mobile, language)").eq("doctor_id", doctor_id).order("created_at", desc=True).execute()
+    result = supabase.table("followups").select("*, patients(name, mobile, language)").eq("doctor_id", doctor_id).order("created_at", desc=True).execute()
     return result.data or []
 
 
@@ -343,25 +356,29 @@ async def list_followups(doctor_id: str):
 @app.get("/queries/pending")
 async def pending_queries(doctor_id: str):
     from database import supabase
-    result = supabase.table("patient_queries").select("*, patients(name, mobile)").eq("doctor_id", doctor_id).eq("status", "pending").order("created_at", desc=True).execute()
+    # table is "queries", not "patient_queries"
+    result = supabase.table("queries").select("*, patients(name, mobile)").eq("doctor_id", doctor_id).eq("status", "open").order("created_at", desc=True).execute()
     return result.data or []
 
 
 @app.get("/queries")
 async def list_queries(doctor_id: str):
     from database import supabase
-    result = supabase.table("patient_queries").select("*, patients(name, mobile)").eq("doctor_id", doctor_id).order("created_at", desc=True).execute()
+    result = supabase.table("queries").select("*, patients(name, mobile)").eq("doctor_id", doctor_id).order("created_at", desc=True).execute()
     return result.data or []
 
 
 @app.patch("/queries/{query_id}/answer")
 async def answer_query(query_id: str, request: Request):
     from database import supabase
+    import datetime as dt
     body = await request.json()
-    result = supabase.table("patient_queries").update({
-        "answer": body["answer"],
-        "status": "answered",
-        "answered_at": __import__("datetime").datetime.utcnow().isoformat(),
+    # column is "reply" not "answer", "replied_at" not "answered_at", status "closed" not "answered"
+    result = supabase.table("queries").update({
+        "reply": body["answer"],
+        "status": "closed",
+        "replied_at": dt.datetime.utcnow().isoformat(),
+        "replied_by": "doctor",
     }).eq("id", query_id).execute()
     return result.data[0] if result.data else {}
 
@@ -370,7 +387,8 @@ async def answer_query(query_id: str, request: Request):
 @app.get("/reviews")
 async def list_reviews(doctor_id: str):
     from database import supabase
-    result = supabase.table("review_requests").select("*, patients(name, mobile)").eq("doctor_id", doctor_id).order("review_sent_at", desc=True).execute()
+    # table is "reviews" not "review_requests", sort by created_at
+    result = supabase.table("reviews").select("*, patients(name, mobile)").eq("doctor_id", doctor_id).order("created_at", desc=True).execute()
     return result.data or []
 
 
