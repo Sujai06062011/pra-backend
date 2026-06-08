@@ -418,11 +418,13 @@ async def answer_query(query_id: str, request: Request):
     # Send WhatsApp notification to patient (non-blocking — DB save already succeeded)
     try:
         if patient_id:
-            pat = supabase.table("patients").select("mobile").eq("id", patient_id).execute()
+            pat = supabase.table("patients").select("mobile, patient_code").eq("id", patient_id).execute()
             mobile = pat.data[0]["mobile"] if pat.data else None
+            patient_code = pat.data[0].get("patient_code", "") if pat.data else ""
             if mobile:
                 msg = (
                     f"👨‍⚕️ *Dr. Kumar Child Care Clinic*\n\n"
+                    f"Patient: *{patient_code}*\n\n"
                     f"*Your question:*\n_{question_text}_\n\n"
                     f"*Dr. Kumar's reply:*\n_{reply_text}_\n\n"
                     f"For appointments reply MENU"
