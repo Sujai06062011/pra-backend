@@ -357,7 +357,7 @@ async def list_followups(doctor_id: str):
 async def pending_queries(doctor_id: str):
     from database import supabase
     # table is "queries", not "patient_queries"
-    result = supabase.table("queries").select("*, patients(name, mobile)").eq("doctor_id", doctor_id).eq("status", "open").order("created_at", desc=True).execute()
+    result = supabase.table("queries").select("*, patients(name, mobile)").eq("doctor_id", doctor_id).eq("status", "Pending").order("created_at", desc=True).execute()
     return result.data or []
 
 
@@ -376,7 +376,7 @@ async def answer_query(query_id: str, request: Request):
     # column is "reply" not "answer", "replied_at" not "answered_at", status "closed" not "answered"
     result = supabase.table("queries").update({
         "reply": body["answer"],
-        "status": "closed",
+        "status": "Closed",
         "replied_at": dt.datetime.utcnow().isoformat(),
         "replied_by": "doctor",
     }).eq("id", query_id).execute()
