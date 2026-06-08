@@ -389,13 +389,76 @@ async def make_followup_call(pres: dict):
         traceback.print_exc()
 
 
+def get_pending_followups():
+    """
+    Get followups from the followups table where:
+    - scheduled_date <= today (due today or overdue)
+    - call_status = 'Pending'
+    - channel = 'whatsapp' (or any channel)
+    """
+    import pytz
+    IST = pytz.timezone('Asia/Kolkata')
+    today_ist = datetime.now(IST).date().isoformat()
+
+    result = supabase.table("followups").select(
+        "id, scheduled_date, channel, patient_id, doctor_id, visit_id, "
+        "patients(id, name, mobile, language), "
+        "visits(diagnosis)"
+    ).eq("call_status", "Pending").lte("scheduled_date", today_ist).execute()
+
+    return result.data or []
+
+
+async def send_followup_whatsapp_from_followups(followup: dict):
+    """Send follow-up WhatsApp message based on followups table row"""
+    patient = followup.get("patients") or {}
+    visit = followup.get("visits") or {}
+    patient_name = patient.get("name", "Patient")
+    mobile = patient.get("mobile", "")
+    language = patient.get("language", "english")
+    diagnosis = visit.get("diagnosis", "")
+
+    if not mobile:
+        print(f"⚠️ No mobile for followup {followup['id']}")
+        return
+
+    # Fetch doctor/clinic name from doctor_id
+    doctor_id = followup.get("doctor_id", "")
+    clinic_name = "Dr. Kumar Child Care Clinic"
+    if doctor_id:
+        dr = supabase.table("doctors").select("clinic_name").eq("id", doctor_id).execute()
+        if dr.data:
+            clinic_name = dr.data[0].get("clinic_name", clinic_name)
+
+    config = LANGUAGE_CONFIG.get(language, LANGUAGE_CONFIG["english"])
+    message = config["whatsapp"].format(name=patient_name, clinic=clinic_name)
+
+    try:
+        twilio_client.messages.create(
+            from_=TWILIO_FROM,
+            to=f"whatsapp:+{mobile}",
+            body=message
+        )
+
+        # Mark followup as completed
+        supabase.table("followups").update({
+            "call_status": "Completed",
+            "completed_at": datetime.now().isoformat()
+        }).eq("id", followup["id"]).execute()
+
+        print(f"✅ Follow-up WhatsApp sent to {patient_name} ({mobile})")
+
+    except Exception as e:
+        print(f"❌ Error sending follow-up WhatsApp to {patient_name}: {e}")
+
+
 async def send_followup_whatsapp_job():
-    """8AM Job: Send follow-up WhatsApp"""
+    """8AM Job: Send follow-up WhatsApp from followups table"""
     print("💬 Running: Follow-up WhatsApp Job")
-    prescriptions = get_prescriptions_ending_today()
-    print(f"Found {len(prescriptions)} prescriptions needing follow-up")
-    for pres in prescriptions:
-        await send_followup_whatsapp(pres)
+    followups = get_pending_followups()
+    print(f"Found {len(followups)} pending followups")
+    for f in followups:
+        await send_followup_whatsapp_from_followups(f)
 
 
 async def make_followup_calls_job():

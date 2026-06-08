@@ -286,15 +286,24 @@ async def send_visit_summary():
 async def send_review_requests():
     """
     10AM Job: Send Google review to patients who visited 7 days ago.
+    Uses created_at with IST date range to handle timezone correctly.
     """
     print("⭐ Running: Review Request Job")
-    seven_days_ago = (date.today() - timedelta(days=7)).isoformat()
+    import pytz
+    IST = pytz.timezone('Asia/Kolkata')
+    today_ist = datetime.now(IST).date()
+    seven_days_ago = today_ist - timedelta(days=7)
+    six_days_ago  = today_ist - timedelta(days=6)
+
+    # Range: entire IST day 7 days ago (00:00 to 24:00 IST = +05:30)
+    range_start = f"{seven_days_ago.isoformat()}T00:00:00+05:30"
+    range_end   = f"{six_days_ago.isoformat()}T00:00:00+05:30"
 
     result = supabase.table("visits").select(
-        "id, patient_id, "
+        "id, patient_id, created_at, "
         "patients(name, mobile), "
         "doctors(clinic_name, name)"
-    ).eq("visit_date", seven_days_ago).eq("visit_status", "Completed").execute()
+    ).gte("created_at", range_start).lt("created_at", range_end).execute()
 
     visits = result.data or []
     print(f"Found {len(visits)} visits from 7 days ago")
