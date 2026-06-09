@@ -158,8 +158,7 @@ async def trigger_review_requests():
 @app.get("/config/{doctor_id}")
 async def get_config(doctor_id: str):
     """Return all config rows for a doctor as typed dict."""
-    from database import supabase as db
-    result = db.table("clinic_config") \
+    result = config_loader._sb.table("clinic_config") \
         .select("config_key, config_value, config_type, description, updated_at") \
         .eq("doctor_id", doctor_id) \
         .order("config_key") \
@@ -170,11 +169,10 @@ async def get_config(doctor_id: str):
 @app.patch("/config/{doctor_id}/{config_key}")
 async def update_config(doctor_id: str, config_key: str, request: Request):
     """Upsert a single config key for a doctor."""
-    from database import supabase as db
     import datetime as dt
     body = await request.json()
     config_value = body.get("config_value", "")
-    result = db.table("clinic_config").upsert({
+    result = config_loader._sb.table("clinic_config").upsert({
         "doctor_id": doctor_id,
         "config_key": config_key,
         "config_value": str(config_value),
