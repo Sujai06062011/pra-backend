@@ -165,11 +165,13 @@ async def get_medicine_categories(doctor_id: str):
 @app.get("/medicines")
 async def search_medicines(doctor_id: str, search: str = "", limit: int = 10):
     from database import supabase as db
-    q = db.table("clinic_medicines").select("*").eq("is_active", True)
+    # Fetch all active medicines, filter by name in Python (ilike not reliable across versions)
+    result = db.table("clinic_medicines").select("*").eq("is_active", True).order("usage_count", desc=True).limit(200).execute()
+    data = result.data or []
     if search:
-        q = q.ilike("name", f"%{search}%")
-    result = q.order("usage_count", desc=True).limit(limit).execute()
-    return result.data or []
+        q_lower = search.lower()
+        data = [m for m in data if q_lower in (m.get("name") or "").lower()]
+    return data[:limit]
 
 @app.post("/medicines")
 async def add_medicine(request: Request):
