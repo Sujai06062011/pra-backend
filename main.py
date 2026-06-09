@@ -157,13 +157,15 @@ async def trigger_review_requests():
 
 @app.get("/medicines/categories")
 async def get_medicine_categories(doctor_id: str):
-    result = config_loader._sb.table("clinic_medicines").select("category").eq("doctor_id", doctor_id).eq("is_active", True).execute()
+    from database import supabase as db
+    result = db.table("clinic_medicines").select("category").eq("is_active", True).execute()
     categories = sorted(set(r["category"] for r in (result.data or []) if r.get("category")))
     return categories
 
 @app.get("/medicines")
 async def search_medicines(doctor_id: str, search: str = "", limit: int = 10):
-    q = config_loader._sb.table("clinic_medicines").select("*").eq("doctor_id", doctor_id).eq("is_active", True)
+    from database import supabase as db
+    q = db.table("clinic_medicines").select("*").eq("is_active", True)
     if search:
         q = q.ilike("name", f"%{search}%")
     result = q.order("usage_count", desc=True).limit(limit).execute()
