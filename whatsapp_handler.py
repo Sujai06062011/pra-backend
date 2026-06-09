@@ -135,8 +135,9 @@ async def handle_message(from_number: str, text: str, to_number: str, media_url:
     # Get conversation state
     current_state, temp_data = get_conversation_state(from_number)
 
-    # ── GLOBAL COMMANDS ───────────────────────────────────────
-    if t in ["menu", "main menu", "back", "home"]:
+    # ── GLOBAL COMMANDS (always reset state) ─────────────────
+    if t in ["menu", "main menu", "back", "home",
+             "hi", "hello", "hey", "start", "help"]:
         save_conversation_state(from_number, "idle", {})
         return build_main_menu(patient_name, clinic_name)
 
@@ -212,8 +213,6 @@ async def handle_message(from_number: str, text: str, to_number: str, media_url:
         intent = "speak"
     elif t == "6" or any(k in t for k in ["ask", "question", "query", "doctor"]):
         intent = "ask_question"
-    elif t in ["hi", "hello", "hey", "start", "help"]:
-        intent = "menu"
 
     # ── BUILD REPLY ───────────────────────────────────────────
     reply    = ""
