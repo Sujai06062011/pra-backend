@@ -529,9 +529,17 @@ async def handle_message(from_number: str, text: str, to_number: str, media_url:
             token = get_next_token(doctor_id, parsed_date)
             create_appointment(booking_for, doctor_id, parsed_date, selected_slot, token)
 
+            # Fetch patient_code for confirmation message
+            try:
+                _pc = _supa.table("patients").select("patient_code").eq("id", booking_for).single().execute()
+                patient_code_line = f"\nPatient Code: {_pc.data['patient_code']}" if _pc.data and _pc.data.get("patient_code") else ""
+            except Exception:
+                patient_code_line = ""
+
             reply = (
                 f"Appointment Confirmed! ✅\n\n"
-                f"Patient: {booking_name}\n"
+                f"Patient: {booking_name}"
+                f"{patient_code_line}\n"
                 f"Date: {booking_date}\n"
                 f"Time: {format_time(selected_slot)}\n"
                 f"Token: #{token}\n"
