@@ -557,8 +557,9 @@ async def queue_status(doctor_id: str, date: str = ""):
     appts = supabase.table("appointments").select("*, patients(*)").eq("doctor_id", doctor_id).eq("appointment_date", d).order("token_number", desc=False).execute()
     all_appts = appts.data or []
     confirmed = [a for a in all_appts if a.get("status") == "Confirmed"]
-    seen    = [a for a in confirmed if (a.get("token_number") or 0) < current]
-    waiting = [a for a in confirmed if (a.get("token_number") or 0) > current]
+    # current_token = last token called; in-progress = current+1; done = ≤ current; waiting = > current+1
+    seen    = [a for a in confirmed if (a.get("token_number") or 0) <= current]
+    waiting = [a for a in confirmed if (a.get("token_number") or 0) > current + 1]
 
     return {
         "current_token": current,
@@ -674,7 +675,78 @@ async def update_prescription(prescription_id: str, request: Request):
     if med_rows:
         supabase.table("prescription_medicines").insert(med_rows).execute()
 
-    return {"ok": True, "prescription_id": prescription_id}
+    # 4. Fetch patient info and send WhatsApp with updated prescription
+    whatsapp_sent = False
+    try:
+        import datetime as dt, pytz
+        pat_res = supabase.table("patients").select("name, mobile, patient_code, language").eq("id", body.get("patient_id", "")).execute()
+        patient = pat_res.data[0] if pat_res.data else {}
+        mobile   = patient.get("mobile", "")
+        pname    = patient.get("name", "Patient")
+        pcode    = patient.get("patient_code", "")
+        language = patient.get("language", "english")
+        diagnosis = body.get("diagnosis", "")
+        dietary   = body.get("dietary_instructions", "")
+        precautions = body.get("precautions", "")
+
+        IST = pytz.timezone("Asia/Kolkata")
+        now_ist = dt.datetime.now(IST)
+
+        timing_icons = {"morning": "🌅", "afternoon": "☀️", "evening": "🌆", "night": "🌙"}
+        timing_labels_en = {"morning": "Morning", "afternoon": "Afternoon", "evening": "Evening", "night": "Night"}
+        timing_labels_ta = {"morning": "காலை", "afternoon": "மதியம்", "evening": "மாலை", "night": "இரவு"}
+
+        def med_line(m, lang, idx):
+            timings_keys = [k for k in ["morning", "afternoon", "evening", "night"] if m.get(k)]
+            icons = " + ".join(timing_icons[k] for k in timings_keys)
+            if lang == "tamil":
+                labels = " + ".join(timing_labels_ta[k] for k in timings_keys)
+                food = "சாப்பிடுவதற்கு முன்" if m.get("before_food") else "சாப்பிட்ட பின்"
+                dur = f"{m.get('duration_days', 5)} நாட்கள்"
+            else:
+                labels = " + ".join(timing_labels_en[k] for k in timings_keys)
+                food = "Before food" if m.get("before_food") else "After food"
+                dur = f"{m.get('duration_days', 5)} days"
+            inst = f"\n   {m['instructions']}" if m.get("instructions") else ""
+            return f"{idx}. {m['medicine_name']} — {m.get('dosage','')}\n   {icons} {labels} | {food} | {dur}{inst}"
+
+        valid_meds = [m for m in medicines if m.get("medicine_name", "").strip()]
+        med_lines = "\n\n".join(med_line(m, language, i+1) for i, m in enumerate(valid_meds))
+
+        if language == "tamil":
+            msg = (
+                f"💊 *மருந்துச் சீட்டு (புதுப்பிக்கப்பட்டது)*\n"
+                f"🏥 Dr. Kumar Child Care Clinic\n\n"
+                f"நோயாளி: {pname}" + (f" ({pcode})" if pcode else "") + f"\n"
+                f"தேதி: {now_ist.strftime('%d %b %Y')}\n"
+                f"நோய்: {diagnosis}\n\n"
+                f"மருந்துகள்:\n{med_lines}"
+            )
+            if dietary:   msg += f"\n\n🥗 உணவு: {dietary}"
+            if precautions: msg += f"\n⚠️ எச்சரிக்கை: {precautions}"
+            msg += f"\n\nFollow-up: 3 நாட்களில் வரவும்."
+        else:
+            msg = (
+                f"💊 *Updated Prescription*\n"
+                f"🏥 Dr. Kumar Child Care Clinic\n\n"
+                f"Patient: {pname}" + (f" ({pcode})" if pcode else "") + f"\n"
+                f"Date: {now_ist.strftime('%d %b %Y')}\n"
+                f"Diagnosis: {diagnosis}\n\n"
+                f"Medicines:\n{med_lines}"
+            )
+            if dietary:     msg += f"\n\n🥗 Diet: {dietary}"
+            if precautions: msg += f"\n⚠️ Precautions: {precautions}"
+            msg += f"\n\nFollow-up in 3 days if not improving.\nReply MENU for any help."
+
+        if mobile:
+            from scheduler import send_whatsapp as _wa
+            _wa(mobile, msg)
+            whatsapp_sent = True
+
+    except Exception as we:
+        print(f"⚠️ WhatsApp send error on update: {we}")
+
+    return {"ok": True, "prescription_id": prescription_id, "whatsapp_sent": whatsapp_sent}
 
 
 @app.get("/prescriptions/active")
