@@ -619,6 +619,64 @@ async def queue_set_token(request: Request):
 
 
 # ── PRESCRIPTIONS ─────────────────────────────────────────
+@app.get("/prescriptions/{prescription_id}/detail")
+async def get_prescription_detail(prescription_id: str):
+    from database import supabase
+    result = supabase.table("prescriptions").select(
+        "*, patients(id, name, mobile, patient_code, age, gender, language), prescription_medicines(*), visits(id, chief_complaint, diagnosis, notes)"
+    ).eq("id", prescription_id).execute()
+    if not result.data:
+        return {}
+    return result.data[0]
+
+
+@app.put("/prescriptions/{prescription_id}")
+async def update_prescription(prescription_id: str, request: Request):
+    from database import supabase
+    body = await request.json()
+
+    # 1. Update prescription fields
+    supabase.table("prescriptions").update({
+        "dietary_instructions": body.get("dietary_instructions", ""),
+        "precautions":          body.get("precautions", ""),
+        "general_notes":        body.get("notes", ""),
+    }).eq("id", prescription_id).execute()
+
+    # 2. Update visit (chief_complaint + diagnosis) if visit_id present
+    visit_id = body.get("visit_id")
+    if visit_id:
+        supabase.table("visits").update({
+            "chief_complaint": body.get("chief_complaint", ""),
+            "diagnosis":       body.get("diagnosis", ""),
+            "notes":           body.get("notes", ""),
+        }).eq("id", visit_id).execute()
+
+    # 3. Replace medicines: delete all, re-insert
+    supabase.table("prescription_medicines").delete().eq("prescription_id", prescription_id).execute()
+    medicines = body.get("medicines", [])
+    med_rows = []
+    for i, m in enumerate(medicines):
+        if not m.get("medicine_name", "").strip():
+            continue
+        med_rows.append({
+            "prescription_id": prescription_id,
+            "medicine_name":   m["medicine_name"],
+            "dosage":          m.get("dosage", ""),
+            "morning":         m.get("morning", False),
+            "afternoon":       m.get("afternoon", False),
+            "evening":         m.get("evening", False),
+            "night":           m.get("night", False),
+            "before_food":     m.get("before_food", False),
+            "duration_days":   m.get("duration_days", 5),
+            "instructions":    m.get("instructions", ""),
+            "sort_order":      m.get("sort_order", i + 1),
+        })
+    if med_rows:
+        supabase.table("prescription_medicines").insert(med_rows).execute()
+
+    return {"ok": True, "prescription_id": prescription_id}
+
+
 @app.get("/prescriptions/active")
 async def active_prescriptions(doctor_id: str):
     from database import supabase
