@@ -384,7 +384,8 @@ async def init_scheduler() -> AsyncIOScheduler:
             CronTrigger(hour=h, minute=m, timezone="Asia/Kolkata"),
             id=job_id,
             name=job_name,
-            replace_existing=True
+            replace_existing=True,
+            misfire_grace_time=300  # fire even if up to 5 min late (e.g. after reload)
         )
         print(f"   ✅ {job_name}: {h:02d}:{m:02d} IST")
 
@@ -420,7 +421,8 @@ async def reschedule(scheduler: AsyncIOScheduler):
             CronTrigger(hour=h, minute=m, timezone="Asia/Kolkata"),
             id=job_id,
             name=job_name,
-            replace_existing=True
+            replace_existing=True,
+            misfire_grace_time=300  # fire even if up to 5 min late
         )
 
     re_add("morning_reminders", "morning_reminders", "Morning Medicine Reminders",       send_morning_reminders)
