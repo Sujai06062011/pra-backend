@@ -153,6 +153,238 @@ async def trigger_review_requests():
     return {"status": "Review requests sent"}
 
 
+# ── CLINIC MEDICINES ──────────────────────────────────────
+
+@app.get("/medicines/categories")
+async def get_medicine_categories(doctor_id: str):
+    from database import supabase as db
+    result = db.table("clinic_medicines").select("category").eq("doctor_id", doctor_id).eq("is_active", True).execute()
+    categories = sorted(set(r["category"] for r in (result.data or []) if r.get("category")))
+    return categories
+
+@app.get("/medicines")
+async def search_medicines(doctor_id: str, search: str = "", limit: int = 10):
+    from database import supabase as db
+    q = db.table("clinic_medicines").select("*").eq("doctor_id", doctor_id).eq("is_active", True).order("usage_count", desc=True)
+    if search:
+        q = q.ilike("name", f"%{search}%")
+    result = q.limit(limit).execute()
+    return result.data or []
+
+@app.post("/medicines")
+async def add_medicine(request: Request):
+    from database import supabase as db
+    import datetime as dt
+    body = await request.json()
+    result = db.table("clinic_medicines").insert({
+        "doctor_id": body["doctor_id"],
+        "name": body["name"],
+        "category": body.get("category", "Other"),
+        "dosages": body.get("dosages", []),
+        "form": body.get("form", "tablet"),
+        "is_active": True,
+    }).execute()
+    return result.data[0] if result.data else {}
+
+@app.put("/medicines/{medicine_id}")
+async def update_medicine(medicine_id: str, request: Request):
+    from database import supabase as db
+    import datetime as dt
+    body = await request.json()
+    update_data = {k: v for k, v in {
+        "name": body.get("name"),
+        "category": body.get("category"),
+        "dosages": body.get("dosages"),
+        "form": body.get("form"),
+        "is_active": body.get("is_active"),
+        "updated_at": dt.datetime.utcnow().isoformat(),
+    }.items() if v is not None}
+    result = db.table("clinic_medicines").update(update_data).eq("id", medicine_id).execute()
+    return result.data[0] if result.data else {}
+
+@app.patch("/medicines/{medicine_id}/increment-usage")
+async def increment_usage(medicine_id: str):
+    from database import supabase as db
+    db.rpc("increment_medicine_usage", {"med_id": medicine_id}).execute()
+    return {"ok": True}
+
+@app.delete("/medicines/{medicine_id}")
+async def deactivate_medicine(medicine_id: str):
+    from database import supabase as db
+    db.table("clinic_medicines").update({"is_active": False}).eq("id", medicine_id).execute()
+    return {"ok": True}
+
+
+# ── PRESCRIPTIONS WRITE ───────────────────────────────────
+
+@app.post("/prescriptions/write")
+async def write_prescription(request: Request):
+    from database import supabase as db
+    import datetime as dt
+    import pytz
+
+    body = await request.json()
+    patient_id       = body["patient_id"]
+    doctor_id_req    = body.get("doctor_id", "8c33abe0-5d2e-4613-9437-c7c375e8d162")
+    appointment_id   = body.get("appointment_id") or None
+    chief_complaint  = body.get("chief_complaint", "")
+    diagnosis        = body.get("diagnosis", "")
+    notes            = body.get("notes", "")
+    dietary          = body.get("dietary_instructions", "")
+    precautions      = body.get("precautions", "")
+    medicines_input  = body.get("medicines", [])
+
+    IST = pytz.timezone("Asia/Kolkata")
+    now_ist = dt.datetime.now(IST)
+    today_str = now_ist.date().isoformat()
+
+    # 1. Fetch patient
+    pat_res = db.table("patients").select("id, name, mobile, patient_code, language").eq("id", patient_id).execute()
+    if not pat_res.data:
+        return {"error": "Patient not found"}, 404
+    patient = pat_res.data[0]
+
+    # 2. Create visit
+    visit_res = db.table("visits").insert({
+        "patient_id":      patient_id,
+        "doctor_id":       doctor_id_req,
+        "appointment_id":  appointment_id,
+        "chief_complaint": chief_complaint,
+        "diagnosis":       diagnosis,
+        "notes":           notes,
+        "visit_status":    "Completed",
+        "created_at":      now_ist.isoformat(),
+    }).execute()
+    visit = visit_res.data[0] if visit_res.data else {}
+    visit_id = visit.get("id", "")
+
+    # 3. Create prescription
+    pres_res = db.table("prescriptions").insert({
+        "patient_id":           patient_id,
+        "doctor_id":            doctor_id_req,
+        "visit_id":             visit_id,
+        "prescription_date":    today_str,
+        "dietary_instructions": dietary,
+        "precautions":          precautions,
+        "general_notes":        notes,
+        "followup_whatsapp_sent": False,
+        "followup_replied":     False,
+        "followup_call_sent":   False,
+        "created_at":           now_ist.isoformat(),
+    }).execute()
+    pres = pres_res.data[0] if pres_res.data else {}
+    pres_id = pres.get("id", "")
+
+    # 4. Insert medicines
+    med_rows = []
+    for i, m in enumerate(medicines_input):
+        if not m.get("medicine_name", "").strip():
+            continue
+        med_rows.append({
+            "prescription_id": pres_id,
+            "medicine_name":   m["medicine_name"],
+            "dosage":          m.get("dosage", ""),
+            "morning":         m.get("morning", False),
+            "afternoon":       m.get("afternoon", False),
+            "evening":         m.get("evening", False),
+            "night":           m.get("night", False),
+            "before_food":     m.get("before_food", False),
+            "duration_days":   m.get("duration_days", 5),
+            "instructions":    m.get("instructions", ""),
+            "sort_order":      m.get("sort_order", i + 1),
+        })
+    if med_rows:
+        db.table("prescription_medicines").insert(med_rows).execute()
+
+    # 5. Create followup record (7 days from today — WhatsApp channel)
+    followup_date = (now_ist.date() + dt.timedelta(days=7)).isoformat()
+    try:
+        db.table("followups").insert({
+            "patient_id":    patient_id,
+            "doctor_id":     doctor_id_req,
+            "visit_id":      visit_id,
+            "scheduled_date": followup_date,
+            "channel":       "whatsapp",
+            "call_status":   "Pending",
+            "followup_day":  7,
+        }).execute()
+    except Exception as fe:
+        print(f"⚠️ Followup insert error: {fe}")
+
+    # 6. Send WhatsApp prescription summary
+    whatsapp_sent = False
+    try:
+        mobile   = patient.get("mobile", "")
+        pname    = patient.get("name", "Patient")
+        pcode    = patient.get("patient_code", "")
+        language = patient.get("language", "english")
+
+        # Build medicine lines
+        timing_icons = {"morning": "🌅", "afternoon": "☀️", "evening": "🌆", "night": "🌙"}
+        timing_labels_en = {"morning": "Morning", "afternoon": "Afternoon", "evening": "Evening", "night": "Night"}
+        timing_labels_ta = {"morning": "காலை", "afternoon": "மதியம்", "evening": "மாலை", "night": "இரவு"}
+
+        def med_line(m, lang, idx):
+            timings_keys = [k for k in ["morning", "afternoon", "evening", "night"] if m.get(k)]
+            icons = " + ".join(timing_icons[k] for k in timings_keys)
+            if lang == "tamil":
+                labels = " + ".join(timing_labels_ta[k] for k in timings_keys)
+                food = "சாப்பிடுவதற்கு முன்" if m.get("before_food") else "சாப்பிட்ட பின்"
+                dur = f"{m.get('duration_days', 5)} நாட்கள்"
+            else:
+                labels = " + ".join(timing_labels_en[k] for k in timings_keys)
+                food = "Before food" if m.get("before_food") else "After food"
+                dur = f"{m.get('duration_days', 5)} days"
+            inst = f"\n   {m['instructions']}" if m.get("instructions") else ""
+            return f"{idx}. {m['medicine_name']} — {m.get('dosage','')}\n   {icons} {labels} | {food} | {dur}{inst}"
+
+        med_lines = "\n\n".join(med_line(m, language, i+1) for i, m in enumerate(medicines_input) if m.get("medicine_name","").strip())
+
+        if language == "tamil":
+            msg = (
+                f"💊 *மருந்துச் சீட்டு*\n"
+                f"🏥 Dr. Kumar Child Care Clinic\n\n"
+                f"நோயாளி: {pname}" + (f" ({pcode})" if pcode else "") + f"\n"
+                f"தேதி: {now_ist.strftime('%d %b %Y')}\n"
+                f"நோய்: {diagnosis}\n\n"
+                f"மருந்துகள்:\n{med_lines}"
+            )
+            if dietary:
+                msg += f"\n\n🥗 உணவு: {dietary}"
+            if precautions:
+                msg += f"\n⚠️ எச்சரிக்கை: {precautions}"
+            msg += f"\n\nFollow-up: 3 நாட்களில் வரவும்.\nகேள்விகளுக்கு MENU என்று reply பண்ணுங்கள்."
+        else:
+            msg = (
+                f"💊 *Your Prescription*\n"
+                f"🏥 Dr. Kumar Child Care Clinic\n\n"
+                f"Patient: {pname}" + (f" ({pcode})" if pcode else "") + f"\n"
+                f"Date: {now_ist.strftime('%d %b %Y')}\n"
+                f"Diagnosis: {diagnosis}\n\n"
+                f"Medicines:\n{med_lines}"
+            )
+            if dietary:
+                msg += f"\n\n🥗 Diet: {dietary}"
+            if precautions:
+                msg += f"\n⚠️ Precautions: {precautions}"
+            msg += f"\n\nFollow-up in 3 days if not improving.\nReply MENU for any help."
+
+        if mobile:
+            from scheduler import send_whatsapp as _wa
+            _wa(mobile, msg)
+            whatsapp_sent = True
+
+    except Exception as we:
+        print(f"⚠️ WhatsApp send error: {we}")
+
+    return {
+        "prescription_id": pres_id,
+        "visit_id": visit_id,
+        "whatsapp_sent": whatsapp_sent,
+        "patient_name": patient.get("name", ""),
+    }
+
+
 # ── CLINIC CONFIG ─────────────────────────────────────────
 
 @app.get("/config/{doctor_id}")
