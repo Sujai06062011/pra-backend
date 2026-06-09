@@ -5,6 +5,7 @@ from supabase import create_client
 from twilio.rest import Client
 from dotenv import load_dotenv
 import os
+import config_loader
 
 load_dotenv()
 
@@ -238,12 +239,16 @@ async def send_visit_summary():
     6PM Job: Send visit summary to patients who visited today.
     """
     print("🏥 Running: Visit Summary Job")
-    today = date.today().isoformat()
+    import pytz
+    IST = pytz.timezone('Asia/Kolkata')
+    today_ist = datetime.now(IST).date()
+    range_start = f"{today_ist.isoformat()}T00:00:00+05:30"
+    range_end   = f"{(today_ist + timedelta(days=1)).isoformat()}T00:00:00+05:30"
 
     result = supabase.table("visits").select(
         "id, patient_id, doctor_id, diagnosis, follow_up_date, "
         "patients(name, mobile), doctors(clinic_name, name)"
-    ).eq("visit_date", today).eq("visit_status", "Completed").execute()
+    ).gte("created_at", range_start).lt("created_at", range_end).execute()
 
     visits = result.data or []
     print(f"Found {len(visits)} visits today")
@@ -251,11 +256,11 @@ async def send_visit_summary():
     for visit in visits:
         try:
             patient = visit.get("patients", {})
-            doctor = visit.get("doctors", {})
+            doctor  = visit.get("doctors", {})
             patient_name = patient.get("name", "Patient")
             mobile = patient.get("mobile", "")
-            clinic_name = doctor.get("clinic_name", "Clinic")
-            doctor_name = doctor.get("name", "Doctor")
+            _clinic_name  = config_loader.clinic_name() or doctor.get("clinic_name", "Clinic")
+            _doctor_name  = config_loader.doctor_name() or doctor.get("name", "Doctor")
             follow_up = visit.get("follow_up_date", "")
             diagnosis = visit.get("diagnosis", "")
 
@@ -267,15 +272,25 @@ async def send_visit_summary():
                 follow_up_date = datetime.strptime(follow_up, "%Y-%m-%d")
                 follow_up_str = f"\n📅 Next Review: {follow_up_date.strftime('%d %B %Y')}"
 
-            message = (
-                f"Dear {patient_name},\n\n"
-                f"Thank you for visiting {clinic_name} today. 🙏\n\n"
-                f"Diagnosis: {diagnosis}"
-                f"{follow_up_str}\n\n"
-                f"Please follow the prescribed medicines and instructions.\n\n"
-                f"For any queries reply to this message.\n"
-                f"- {doctor_name}"
+            # Try DB template, fall back to hardcoded
+            template_msg = config_loader.get_template(
+                "visit_summary", "english",
+                {"name": patient_name, "clinic": _clinic_name,
+                 "diagnosis": diagnosis, "followup_str": follow_up_str,
+                 "doctor": _doctor_name}
             )
+            if template_msg:
+                message = template_msg
+            else:
+                message = (
+                    f"Dear {patient_name},\n\n"
+                    f"Thank you for visiting {_clinic_name} today. 🙏\n\n"
+                    f"Diagnosis: {diagnosis}"
+                    f"{follow_up_str}\n\n"
+                    f"Please follow the prescribed medicines and instructions.\n\n"
+                    f"For any queries reply to this message.\n"
+                    f"- {_doctor_name}"
+                )
 
             send_whatsapp(mobile, message)
 
@@ -311,25 +326,35 @@ async def send_review_requests():
     for visit in visits:
         try:
             patient = visit.get("patients", {})
-            doctor = visit.get("doctors", {})
+            doctor  = visit.get("doctors", {})
             patient_name = patient.get("name", "Patient")
             mobile = patient.get("mobile", "")
-            clinic_name = doctor.get("clinic_name", "Clinic")
-            doctor_name = doctor.get("name", "Doctor")
+            _clinic_name  = config_loader.clinic_name() or doctor.get("clinic_name", "Clinic")
+            _doctor_name  = config_loader.doctor_name() or doctor.get("name", "Doctor")
+            _review_link  = config_loader.google_review_link()
 
             if not mobile:
                 continue
 
-            message = (
-                f"Dear {patient_name},\n\n"
-                f"We hope you are feeling much better now! 😊\n\n"
-                f"It has been a week since your visit to {clinic_name}. "
-                f"Your feedback means a lot to us!\n\n"
-                f"⭐ Please take 1 minute to share your experience:\n"
-                f"https://g.page/r/drkumarclinic/review\n\n"
-                f"Thank you for trusting us with your health!\n"
-                f"- {doctor_name} & Team"
+            # Try DB template, fall back to hardcoded
+            template_msg = config_loader.get_template(
+                "review_request", "english",
+                {"name": patient_name, "clinic": _clinic_name,
+                 "doctor": _doctor_name, "review_link": _review_link}
             )
+            if template_msg:
+                message = template_msg
+            else:
+                message = (
+                    f"Dear {patient_name},\n\n"
+                    f"We hope you are feeling much better now! 😊\n\n"
+                    f"It has been a week since your visit to {_clinic_name}. "
+                    f"Your feedback means a lot to us!\n\n"
+                    f"⭐ Please take 1 minute to share your experience:\n"
+                    f"{_review_link}\n\n"
+                    f"Thank you for trusting us with your health!\n"
+                    f"- {_doctor_name} & Team"
+                )
 
             send_whatsapp(mobile, message)
 
@@ -337,86 +362,71 @@ async def send_review_requests():
             print(f"❌ Error sending review request: {e}")
 
 
-def init_scheduler() -> AsyncIOScheduler:
-    """Initialize and return the scheduler"""
+async def init_scheduler() -> AsyncIOScheduler:
+    """
+    Initialize scheduler with times and feature flags loaded from clinic_config DB.
+    Each job is only registered if its feature flag is enabled.
+    """
+    from followup import send_followup_whatsapp_job, make_followup_calls_job
+
+    # Warm the config cache once
+    config_loader.load_config()
+
     scheduler = AsyncIOScheduler(timezone="Asia/Kolkata")
 
-    # # Morning reminder - 8:00 AM IST
-    # scheduler.add_job(
-    #     send_morning_reminders,
-    #     CronTrigger(hour=8, minute=0, timezone="Asia/Kolkata"),
-    #     id="morning_reminders",
-    #     name="Morning Medicine Reminders",
-    #     replace_existing=True
-    # )
+    def add_job_if_enabled(feature: str, job_id: str, job_name: str, func):
+        if not config_loader.is_enabled(feature):
+            print(f"⏭️  {job_name} disabled (feature.{feature}.enabled=false)")
+            return
+        h, m = config_loader.get_scheduler_time(job_id)
+        scheduler.add_job(
+            func,
+            CronTrigger(hour=h, minute=m, timezone="Asia/Kolkata"),
+            id=job_id,
+            name=job_name,
+            replace_existing=True
+        )
+        print(f"   ✅ {job_name}: {h:02d}:{m:02d} IST")
 
-    # # Evening reminder - 8:00 PM IST
-    # scheduler.add_job(
-    #     send_evening_reminders,
-    #     CronTrigger(hour=20, minute=0, timezone="Asia/Kolkata"),
-    #     id="evening_reminders",
-    #     name="Evening Night Medicine Reminders",
-    #     replace_existing=True
-    # )
-
-    # # Visit summary - 6:00 PM IST
-    # scheduler.add_job(
-    #     send_visit_summary,
-    #     CronTrigger(hour=18, minute=0, timezone="Asia/Kolkata"),
-    #     id="visit_summary",
-    #     name="Evening Visit Summary",
-    #     replace_existing=True
-    # )
-
-    # # Review requests - 10:00 AM IST
-    # scheduler.add_job(
-    #     send_review_requests,
-    #     CronTrigger(hour=10, minute=0, timezone="Asia/Kolkata"),
-    #     id="review_requests",
-    #     name="Day 7 Review Requests",
-    #     replace_existing=True
-    # )
-
-        # Morning reminder - 06:31 PM IST
-    scheduler.add_job(
-        send_morning_reminders,
-        CronTrigger(hour=20, minute=53, timezone="Asia/Kolkata"),
-        id="morning_reminders",
-        name="Morning Medicine Reminders",
-        replace_existing=True
-    )
-
-    # Evening reminder - 06:32 PM IST
-    scheduler.add_job(
-        send_evening_reminders,
-        CronTrigger(hour=20, minute=53, timezone="Asia/Kolkata"),
-        id="evening_reminders",
-        name="Evening Night Medicine Reminders",
-        replace_existing=True
-    )
-
-    # Visit summary - 06:30 PM IST
-    scheduler.add_job(
-        send_visit_summary,
-        CronTrigger(hour=20, minute=53, timezone="Asia/Kolkata"),
-        id="visit_summary",
-        name="Evening Visit Summary",
-        replace_existing=True
-    )
-
-    # Review requests - 06:33 PM IST
-    scheduler.add_job(
-        send_review_requests,
-        CronTrigger(hour=20, minute=53, timezone="Asia/Kolkata"),
-        id="review_requests",
-        name="Day 7 Review Requests",
-        replace_existing=True
-    )
-
-    # print("✅ Scheduler initialized:")
-    # print("   🌅 Morning reminders:  8:00 AM IST")
-    # print("   🌙 Evening reminders:  8:00 PM IST")
-    # print("   🏥 Visit summary:      6:00 PM IST")
-    # print("   ⭐ Review requests:   10:00 AM IST")
+    print("⏰ Initializing scheduler from DB config:")
+    add_job_if_enabled("morning_reminders",  "morning_reminders",  "Morning Medicine Reminders",    send_morning_reminders)
+    add_job_if_enabled("evening_reminders",  "evening_reminders",  "Evening Night Medicine Reminders", send_evening_reminders)
+    add_job_if_enabled("visit_summary",      "visit_summary",      "Evening Visit Summary",          send_visit_summary)
+    add_job_if_enabled("review_requests",    "review_requests",    "Day 7 Review Requests",          send_review_requests)
+    add_job_if_enabled("followup_whatsapp",  "followup_whatsapp",  "Follow-up WhatsApp",             send_followup_whatsapp_job)
+    add_job_if_enabled("followup_calls",     "followup_calls",     "Follow-up Voice Calls",          make_followup_calls_job)
 
     return scheduler
+
+
+async def reschedule(scheduler: AsyncIOScheduler):
+    """
+    Remove all existing jobs and re-add with fresh config from DB.
+    Called by /config/reload-scheduler endpoint.
+    """
+    config_loader.invalidate_cache()
+    scheduler.remove_all_jobs()
+    await init_scheduler.__wrapped__(scheduler) if hasattr(init_scheduler, "__wrapped__") else None
+    # Simpler: just re-populate jobs inline
+    from followup import send_followup_whatsapp_job, make_followup_calls_job
+    config_loader.load_config()
+
+    def re_add(feature: str, job_id: str, job_name: str, func):
+        if not config_loader.is_enabled(feature):
+            return
+        h, m = config_loader.get_scheduler_time(job_id)
+        scheduler.add_job(
+            func,
+            CronTrigger(hour=h, minute=m, timezone="Asia/Kolkata"),
+            id=job_id,
+            name=job_name,
+            replace_existing=True
+        )
+
+    re_add("morning_reminders", "morning_reminders", "Morning Medicine Reminders",       send_morning_reminders)
+    re_add("evening_reminders", "evening_reminders", "Evening Night Medicine Reminders",  send_evening_reminders)
+    re_add("visit_summary",     "visit_summary",     "Evening Visit Summary",             send_visit_summary)
+    re_add("review_requests",   "review_requests",   "Day 7 Review Requests",             send_review_requests)
+    re_add("followup_whatsapp", "followup_whatsapp", "Follow-up WhatsApp",                send_followup_whatsapp_job)
+    re_add("followup_calls",    "followup_calls",    "Follow-up Voice Calls",             make_followup_calls_job)
+    print("🔄 Scheduler reloaded with fresh DB config")

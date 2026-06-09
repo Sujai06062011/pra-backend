@@ -21,6 +21,7 @@ from fastapi import Request
 from fastapi.responses import PlainTextResponse
 
 load_dotenv()
+import config_loader
 
 supabase = create_client(
     os.getenv("SUPABASE_URL"),
@@ -422,16 +423,19 @@ async def send_followup_whatsapp_from_followups(followup: dict):
         print(f"⚠️ No mobile for followup {followup['id']}")
         return
 
-    # Fetch doctor/clinic name from doctor_id
+    # Use config_loader for clinic name (avoids extra DB query per followup)
     doctor_id = followup.get("doctor_id", "")
-    clinic_name = "Dr. Kumar Child Care Clinic"
-    if doctor_id:
-        dr = supabase.table("doctors").select("clinic_name").eq("id", doctor_id).execute()
-        if dr.data:
-            clinic_name = dr.data[0].get("clinic_name", clinic_name)
+    clinic_name = config_loader.clinic_name(doctor_id) if doctor_id else config_loader.clinic_name()
 
-    config = LANGUAGE_CONFIG.get(language, LANGUAGE_CONFIG["english"])
-    message = config["whatsapp"].format(name=patient_name, clinic=clinic_name)
+    # Try DB template first, fall back to LANGUAGE_CONFIG hardcoded
+    message = config_loader.get_template(
+        "followup_whatsapp", language,
+        {"name": patient_name, "clinic": clinic_name},
+        doctor_id or config_loader.DOCTOR_ID
+    )
+    if not message:
+        config = LANGUAGE_CONFIG.get(language, LANGUAGE_CONFIG["english"])
+        message = config["whatsapp"].format(name=patient_name, clinic=clinic_name)
 
     try:
         twilio_client.messages.create(

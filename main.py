@@ -8,8 +8,9 @@ import os
 from datetime import date, timedelta
 from collections import defaultdict
 from whatsapp_handler import handle_message
-from scheduler import init_scheduler
+from scheduler import init_scheduler, reschedule
 from followup import prewarm_response_audios
+import config_loader
 
 
 load_dotenv()
@@ -51,16 +52,20 @@ async def onboard_clinic(request: Request):
     
     return {"status": "success", "doctor_id": result.data[0]["id"]}
 
-# In main.py - startup event
+# ── GLOBAL SCHEDULER REFERENCE (for reload endpoint) ─────
+_scheduler = None
+
+
 @app.on_event("startup")
 async def startup_event():
-    scheduler = init_scheduler()
-    scheduler.start()
-    
+    global _scheduler
+    _scheduler = await init_scheduler()
+    _scheduler.start()
+
     # Pre-warm all response audios
     await prewarm_response_audios()
-    
-    print("🚀 PRA Backend started with scheduler")
+
+    print("🚀 PRA Backend started with DB-driven scheduler")
 
 def send_whatsapp(to_number: str, message: str):
     try:
@@ -72,13 +77,6 @@ def send_whatsapp(to_number: str, message: str):
         print(f"✅ Sent to {to_number}: SID {msg.sid}")
     except Exception as e:
         print(f"❌ Twilio error: {e}")
-
-
-@app.on_event("startup")
-async def startup_event():
-    scheduler = init_scheduler()
-    scheduler.start()
-    print("🚀 PRA Backend started with scheduler")
 
 
 @app.get("/")
@@ -153,6 +151,48 @@ async def trigger_review_requests():
     from scheduler import send_review_requests
     await send_review_requests()
     return {"status": "Review requests sent"}
+
+
+# ── CLINIC CONFIG ─────────────────────────────────────────
+
+@app.get("/config/{doctor_id}")
+async def get_config(doctor_id: str):
+    """Return all config rows for a doctor as typed dict."""
+    from database import supabase as db
+    result = db.table("clinic_config") \
+        .select("config_key, config_value, config_type, description, updated_at") \
+        .eq("doctor_id", doctor_id) \
+        .order("config_key") \
+        .execute()
+    return result.data or []
+
+
+@app.patch("/config/{doctor_id}/{config_key}")
+async def update_config(doctor_id: str, config_key: str, request: Request):
+    """Upsert a single config key for a doctor."""
+    from database import supabase as db
+    import datetime as dt
+    body = await request.json()
+    config_value = body.get("config_value", "")
+    result = db.table("clinic_config").upsert({
+        "doctor_id": doctor_id,
+        "config_key": config_key,
+        "config_value": str(config_value),
+        "updated_at": dt.datetime.utcnow().isoformat(),
+    }, on_conflict="doctor_id,config_key").execute()
+    # Invalidate in-process cache
+    config_loader.invalidate_cache()
+    return result.data[0] if result.data else {}
+
+
+@app.post("/config/reload-scheduler")
+async def reload_scheduler_endpoint():
+    """Invalidate config cache and reschedule all jobs with fresh DB config."""
+    global _scheduler
+    if _scheduler is None:
+        return {"status": "error", "message": "Scheduler not initialized"}
+    await reschedule(_scheduler)
+    return {"status": "ok", "message": "Scheduler reloaded from DB config"}
 
 
 if __name__ == "__main__":
