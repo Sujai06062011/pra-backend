@@ -393,21 +393,53 @@ async def make_followup_call(pres: dict):
 def get_pending_followups():
     """
     Get followups from the followups table where:
-    - scheduled_date <= today (due today or overdue)
+    - scheduled_date = today (date comparison only)
     - call_status = 'Pending'
-    - channel = 'whatsapp' (or any channel)
     """
     import pytz
     IST = pytz.timezone('Asia/Kolkata')
     today_ist = datetime.now(IST).date().isoformat()
 
+    print(f"🔍 [get_pending_followups] Today (IST): {today_ist}")
+
+    # Fetch all Pending rows due today or earlier (date-only comparison)
     result = supabase.table("followups").select(
-        "id, scheduled_date, channel, patient_id, doctor_id, visit_id, "
+        "id, scheduled_date, channel, call_status, patient_id, doctor_id, visit_id, "
         "patients(id, name, mobile, language), "
         "visits(diagnosis)"
     ).eq("call_status", "Pending").lte("scheduled_date", today_ist).execute()
 
-    return result.data or []
+    rows = result.data or []
+    print(f"🔍 [get_pending_followups] Raw rows returned: {len(rows)}")
+    for r in rows:
+        print(f"    id={r['id']} scheduled_date={r['scheduled_date']} channel={r['channel']} call_status={r['call_status']}")
+
+    return rows
+
+
+def get_followups_needing_call():
+    """
+    Get followups where WhatsApp was already sent (call_status = 'Whatsapp-Sent')
+    and scheduled_date <= today — these need a voice call now.
+    """
+    import pytz
+    IST = pytz.timezone('Asia/Kolkata')
+    today_ist = datetime.now(IST).date().isoformat()
+
+    print(f"🔍 [get_followups_needing_call] Today (IST): {today_ist}")
+
+    result = supabase.table("followups").select(
+        "id, scheduled_date, channel, call_status, patient_id, doctor_id, visit_id, "
+        "patients(id, name, mobile, language), "
+        "visits(diagnosis)"
+    ).eq("call_status", "Whatsapp-Sent").lte("scheduled_date", today_ist).execute()
+
+    rows = result.data or []
+    print(f"🔍 [get_followups_needing_call] Raw rows returned: {len(rows)}")
+    for r in rows:
+        print(f"    id={r['id']} scheduled_date={r['scheduled_date']} channel={r['channel']} call_status={r['call_status']}")
+
+    return rows
 
 
 async def send_followup_whatsapp_from_followups(followup: dict):
@@ -444,16 +476,57 @@ async def send_followup_whatsapp_from_followups(followup: dict):
             body=message
         )
 
-        # Mark followup as completed
+        # Mark followup as Whatsapp-Sent so voice call job picks it up next
         supabase.table("followups").update({
-            "call_status": "Completed",
-            "completed_at": datetime.now().isoformat()
+            "call_status": "Whatsapp-Sent",
         }).eq("id", followup["id"]).execute()
 
         print(f"✅ Follow-up WhatsApp sent to {patient_name} ({mobile})")
 
     except Exception as e:
         print(f"❌ Error sending follow-up WhatsApp to {patient_name}: {e}")
+
+
+async def make_followup_call_from_followup(followup: dict):
+    """Make Twilio voice call for a followups-table row; marks call_status = 'Completed'."""
+    patient = followup.get("patients") or {}
+    patient_name = patient.get("name", "Patient")
+    patient_id = patient.get("id", "")
+    mobile = patient.get("mobile", "")
+    language = patient.get("language", "english")
+    followup_id = followup["id"]
+
+    if not mobile or not patient_id:
+        print(f"⚠️ Skipping followup {followup_id} — no mobile/patient")
+        return
+
+    # Fetch doctor name for audio generation
+    doctor_id = followup.get("doctor_id", "")
+    doctor_name = config_loader.doctor_name(doctor_id) if doctor_id else "Doctor"
+
+    try:
+        audio_url = await get_or_generate_audio(
+            patient_id, patient_name, doctor_name, language
+        )
+
+        call = twilio_client.calls.create(
+            from_=TWILIO_VOICE_NUMBER,
+            to=f"+{mobile}",
+            url=f"{BASE_URL}/webhook/voice/followup?followup_id={followup_id}&audio_url={audio_url}&lang={language}",
+            timeout=30
+        )
+
+        supabase.table("followups").update({
+            "call_status": "Completed",
+            "completed_at": datetime.now().isoformat()
+        }).eq("id", followup_id).execute()
+
+        print(f"✅ Follow-up call initiated to {patient_name} ({mobile}): {call.sid}")
+
+    except Exception as e:
+        print(f"❌ Error making follow-up call to {patient_name}: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 async def send_followup_whatsapp_job():
@@ -466,12 +539,12 @@ async def send_followup_whatsapp_job():
 
 
 async def make_followup_calls_job():
-    """6PM Job: Call patients who haven't replied"""
+    """6PM Job: Call patients whose WhatsApp was sent (call_status = 'Whatsapp-Sent')"""
     print("📞 Running: Follow-up Voice Call Job")
-    prescriptions = get_prescriptions_needing_call()
-    print(f"Found {len(prescriptions)} patients needing follow-up call")
-    for pres in prescriptions:
-        await make_followup_call(pres)
+    followups = get_followups_needing_call()
+    print(f"Found {len(followups)} patients needing follow-up call")
+    for followup in followups:
+        await make_followup_call_from_followup(followup)
 
 
 async def handle_voice_followup_webhook(request: Request):
