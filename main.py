@@ -631,6 +631,41 @@ async def register_patient(request: Request):
     return patient
 
 
+@app.get("/patients/search")
+async def search_patient_by_mobile(mobile: str):
+    from database import supabase
+    # Normalize: strip + and leading 91
+    normalized = mobile.lstrip("+")
+    if normalized.startswith("91") and len(normalized) == 12:
+        normalized = normalized[2:]
+    with_prefix = "91" + normalized
+
+    all_patients = supabase.table("patients").select("id, name, age, mobile, patient_code").execute()
+    patients = all_patients.data or []
+
+    match = None
+    for p in patients:
+        pm = (p.get("mobile") or "").lstrip("+")
+        if pm.startswith("91") and len(pm) == 12:
+            pm_short = pm[2:]
+        else:
+            pm_short = pm
+        if pm_short == normalized or pm == with_prefix or pm == normalized:
+            match = p
+            break
+
+    if not match:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    return {
+        "patient_id": match["id"],
+        "name": match["name"],
+        "age": match.get("age"),
+        "mobile": match["mobile"],
+        "last_visit_date": None,
+    }
+
+
 @app.get("/patients/{patient_id}")
 async def get_patient(patient_id: str):
     from database import supabase
@@ -919,11 +954,199 @@ async def list_prescriptions(doctor_id: str, patient_id: str = ""):
 
 
 @app.post("/prescriptions")
-async def create_prescription(request: Request):
-    from database import supabase
+async def create_prescription_v2(request: Request):
+    from database import supabase as db
+    import datetime as dt
+    import pytz
+
     body = await request.json()
-    result = supabase.table("prescriptions").insert(body).execute()
-    return result.data[0] if result.data else {}
+    doctor_id_req    = body.get("doctor_id", "8c33abe0-5d2e-4613-9437-c7c375e8d162")
+    patient_id       = body.get("patient_id") or None
+    visit_id_req     = body.get("visit_id") or None
+    appointment_id   = body.get("appointment_id") or None
+    is_walkin        = body.get("is_walkin", False)
+    walkin_name      = body.get("walkin_name") or None
+    walkin_age       = body.get("walkin_age") or None
+    chief_complaint  = body.get("chief_complaint", "")
+    dietary          = body.get("dietary_instructions", "")
+    precautions      = body.get("precautions", "")
+    notes            = body.get("general_notes", "")
+    medicines_input  = body.get("medicines", [])
+
+    IST = pytz.timezone("Asia/Kolkata")
+    now_ist = dt.datetime.now(IST)
+    today_str = now_ist.date().isoformat()
+
+    # Auto-create visit if patient linked and no visit provided
+    visit_id = visit_id_req
+    if patient_id and not visit_id:
+        visit_res = db.table("visits").insert({
+            "patient_id":      patient_id,
+            "doctor_id":       doctor_id_req,
+            "appointment_id":  appointment_id,
+            "chief_complaint": chief_complaint,
+            "visit_status":    "Completed",
+            "visit_date":      today_str,
+            "created_at":      now_ist.isoformat(),
+        }).execute()
+        visit_id = visit_res.data[0]["id"] if visit_res.data else None
+
+    pres_data = {
+        "doctor_id":            doctor_id_req,
+        "patient_id":           patient_id,
+        "visit_id":             visit_id,
+        "prescription_date":    today_str,
+        "dietary_instructions": dietary,
+        "precautions":          precautions,
+        "general_notes":        notes,
+        "whatsapp_sent":        False,
+        "created_at":           now_ist.isoformat(),
+    }
+    pres_res = db.table("prescriptions").insert(pres_data).execute()
+    pres = pres_res.data[0] if pres_res.data else {}
+    pres_id = pres.get("id", "")
+
+    med_rows = []
+    for i, m in enumerate(medicines_input):
+        if not m.get("medicine_name", "").strip():
+            continue
+        med_rows.append({
+            "prescription_id": pres_id,
+            "medicine_name":   m["medicine_name"],
+            "dosage":          m.get("dosage", ""),
+            "morning":         m.get("morning", False),
+            "afternoon":       m.get("afternoon", False),
+            "evening":         m.get("evening", False),
+            "night":           m.get("night", False),
+            "before_food":     m.get("before_food", False),
+            "duration_days":   m.get("duration_days", 5),
+            "instructions":    m.get("instructions", ""),
+            "sort_order":      m.get("sort_order", i + 1),
+        })
+    if med_rows:
+        db.table("prescription_medicines").insert(med_rows).execute()
+
+    # Auto followup if patient linked
+    if patient_id:
+        followup_date = (now_ist.date() + dt.timedelta(days=7)).isoformat()
+        try:
+            db.table("followups").insert({
+                "patient_id":     patient_id,
+                "doctor_id":      doctor_id_req,
+                "visit_id":       visit_id,
+                "scheduled_date": followup_date,
+                "channel":        "whatsapp",
+                "call_status":    "Pending",
+                "followup_day":   7,
+            }).execute()
+        except Exception:
+            pass
+
+    return {"prescription_id": pres_id}
+
+
+@app.post("/prescriptions/{prescription_id}/send-whatsapp")
+async def send_prescription_whatsapp(prescription_id: str):
+    from database import supabase as db
+    import datetime as dt
+    import pytz
+
+    try:
+        pres_res = db.table("prescriptions").select("*").eq("id", prescription_id).execute()
+        if not pres_res.data:
+            raise HTTPException(status_code=404, detail="Prescription not found")
+        pres = pres_res.data[0]
+
+        patient_id = pres.get("patient_id")
+        if not patient_id:
+            raise HTTPException(status_code=400, detail="No patient linked to this prescription")
+
+        pat_res = db.table("patients").select("name, mobile, patient_code, language").eq("id", patient_id).execute()
+        if not pat_res.data:
+            raise HTTPException(status_code=404, detail="Patient not found")
+        pat = pat_res.data[0]
+
+        name = pat.get("name", "")
+        mobile = (pat.get("mobile") or "").lstrip("+")
+        pcode = pat.get("patient_code", "")
+        language = (pat.get("language") or "english").lower()
+
+        meds_res = db.table("prescription_medicines").select("*").eq("prescription_id", prescription_id).execute()
+        medicines = meds_res.data or []
+
+        dietary = pres.get("dietary_instructions", "")
+        precautions_text = pres.get("precautions", "")
+
+        IST = pytz.timezone("Asia/Kolkata")
+        now_ist = dt.datetime.now(IST)
+        pdate = pres.get("prescription_date", now_ist.strftime("%Y-%m-%d"))
+        try:
+            pdate_fmt = dt.datetime.strptime(pdate, "%Y-%m-%d").strftime("%d %b %Y")
+        except Exception:
+            pdate_fmt = pdate
+
+        timing_icons = {"morning": "🌅", "afternoon": "☀️", "evening": "🌆", "night": "🌙"}
+        timing_labels_en = {"morning": "Morning", "afternoon": "Afternoon", "evening": "Evening", "night": "Night"}
+        timing_labels_ta = {"morning": "காலை", "afternoon": "மதியம்", "evening": "மாலை", "night": "இரவு"}
+
+        def med_line(m, lang, idx):
+            timings_keys = [k for k in ["morning", "afternoon", "evening", "night"] if m.get(k)]
+            icons = " + ".join(timing_icons[k] for k in timings_keys)
+            if lang == "tamil":
+                labels = " + ".join(timing_labels_ta[k] for k in timings_keys)
+                food = "சாப்பிடுவதற்கு முன்" if m.get("before_food") else "சாப்பிட்ட பின்"
+                dur = f"{m.get('duration_days', 5)} நாட்கள்"
+            else:
+                labels = " + ".join(timing_labels_en[k] for k in timings_keys)
+                food = "Before food" if m.get("before_food") else "After food"
+                dur = f"{m.get('duration_days', 5)} days"
+            inst = f"\n   {m['instructions']}" if m.get("instructions") else ""
+            return f"{idx}. {m['medicine_name']} — {m.get('dosage', '')}\n   {icons} {labels} | {food} | {dur}{inst}"
+
+        med_lines = "\n\n".join(
+            med_line(m, language, i + 1)
+            for i, m in enumerate(medicines)
+            if m.get("medicine_name", "").strip()
+        )
+
+        if language == "tamil":
+            msg = (
+                f"💊 *மருந்துச் சீட்டு*\n"
+                f"🏥 Dr. Kumar Child Care Clinic\n\n"
+                f"நோயாளி: {name}" + (f" ({pcode})" if pcode else "") + f"\n"
+                f"தேதி: {pdate_fmt}\n\n"
+                f"மருந்துகள்:\n{med_lines}"
+            )
+            if dietary:
+                msg += f"\n\n🥗 உணவு: {dietary}"
+            if precautions_text:
+                msg += f"\n⚠️ எச்சரிக்கை: {precautions_text}"
+            msg += f"\n\nFollow-up: 7 நாட்களில் வரவும்.\nகேள்விகளுக்கு MENU என்று reply பண்ணுங்கள்."
+        else:
+            msg = (
+                f"💊 *Your Prescription*\n"
+                f"🏥 Dr. Kumar Child Care Clinic\n\n"
+                f"Patient: {name}" + (f" ({pcode})" if pcode else "") + f"\n"
+                f"Date: {pdate_fmt}\n\n"
+                f"Medicines:\n{med_lines}"
+            )
+            if dietary:
+                msg += f"\n\n🥗 Diet: {dietary}"
+            if precautions_text:
+                msg += f"\n⚠️ Precautions: {precautions_text}"
+            msg += f"\n\nFollow-up in 7 days.\nReply MENU for any help."
+
+        from scheduler import send_whatsapp as _wa
+        _wa(mobile, msg)
+
+        db.table("prescriptions").update({"whatsapp_sent": True}).eq("id", prescription_id).execute()
+
+        return {"sent": True, "mobile": mobile}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"sent": False, "error": str(e)}
 
 
 # ── FOLLOW-UPS ────────────────────────────────────────────
