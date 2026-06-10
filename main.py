@@ -438,7 +438,7 @@ async def dashboard_stats(doctor_id: str):
     from database import supabase
     today = date.today().isoformat()
 
-    today_appts = supabase.table("appointments").select("id", count="exact").eq("doctor_id", doctor_id).eq("appointment_date", today).execute()
+    today_appts = supabase.table("appointments").select("id", count="exact").eq("doctor_id", doctor_id).eq("appointment_date", today).neq("status", "Cancelled").execute()
     # tokens uses queue_date, not appointment_date
     token_row = supabase.table("tokens").select("current_token").eq("doctor_id", doctor_id).eq("queue_date", today).execute()
     # patients table has no doctor_id — single-clinic deployment, count all patients
@@ -446,7 +446,9 @@ async def dashboard_stats(doctor_id: str):
     total_patients = all_patients.count or 0
     # followups table (no underscore), filter by call_status not status
     pending_followups = supabase.table("followups").select("id", count="exact").eq("doctor_id", doctor_id).is_("completed_at", "null").execute()
-    today_completed = supabase.table("appointments").select("id", count="exact").eq("doctor_id", doctor_id).eq("appointment_date", today).eq("status", "completed").execute()
+    # completed = tokens seen today (current_token tracks last done token number)
+    current_token_val = token_row.data[0]["current_token"] if token_row.data else 0
+    today_completed_count = current_token_val
 
     week_map = defaultdict(int)
     for i in range(6, -1, -1):
@@ -466,10 +468,10 @@ async def dashboard_stats(doctor_id: str):
 
     return {
         "today_appointments": today_appts.count or 0,
-        "current_token": (token_row.data[0]["current_token"] if token_row.data else 0),
+        "current_token": current_token_val,
         "total_patients": total_patients,
         "pending_followups": pending_followups.count or 0,
-        "today_completed": today_completed.count or 0,
+        "today_completed": today_completed_count,
         "weekly_appointments": weekly,
         "top_diagnoses": top_diagnoses,
     }
