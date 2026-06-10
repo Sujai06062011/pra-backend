@@ -494,6 +494,90 @@ async def family_members(head_mobile: str):
     return result.data or []
 
 
+@app.get("/patients/lookup")
+async def lookup_patient(mobile: str):
+    """Look up patients by mobile number (with or without 91 prefix)."""
+    from database import supabase
+    m = mobile.strip().lstrip("+")
+    candidates = {m}
+    if m.startswith("91") and len(m) > 10:
+        candidates.add(m[2:])
+    else:
+        candidates.add("91" + m)
+    results = []
+    for candidate in candidates:
+        res = supabase.table("patients")\
+            .select("*")\
+            .or_(f"mobile.eq.{candidate},family_head_mobile.eq.{candidate}")\
+            .execute()
+        for p in (res.data or []):
+            if not any(r["id"] == p["id"] for r in results):
+                results.append(p)
+    return results
+
+
+@app.post("/patients/register")
+async def register_patient(request: Request):
+    """Register a new patient and generate patient_code."""
+    from database import supabase
+    body = await request.json()
+
+    name       = (body.get("name") or "").strip()
+    mobile_raw = (body.get("mobile") or "").strip().lstrip("+")
+    dob        = body.get("date_of_birth") or ""
+    gender     = body.get("gender") or ""
+    language   = body.get("language") or ""
+    email      = body.get("email") or None
+    city       = body.get("city") or None
+    fhm        = body.get("family_head_mobile") or None
+    doctor_id  = body.get("doctor_id") or ""
+
+    name_clean = name.replace(" ", "")
+    prefix = name_clean[:3].upper() if len(name_clean) >= 3 else name_clean.upper().ljust(3, "X")
+    suffix = mobile_raw[-4:] if len(mobile_raw) >= 4 else mobile_raw
+    year   = dob[:4] if len(dob) >= 4 else "0000"
+    base_code = f"{prefix}-{suffix}-{year}"
+
+    existing = supabase.table("patients").select("patient_code")\
+        .like("patient_code", f"{base_code}%").execute()
+    existing_codes = {r["patient_code"] for r in (existing.data or [])}
+    code = base_code
+    counter = 2
+    while code in existing_codes:
+        code = f"{base_code}-{counter}"
+        counter += 1
+
+    age = None
+    if dob:
+        try:
+            from datetime import date as _date
+            born = _date.fromisoformat(dob)
+            today = _date.today()
+            age = today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+        except Exception:
+            pass
+
+    row = {
+        "doctor_id":    doctor_id,
+        "name":         name,
+        "mobile":       mobile_raw,
+        "date_of_birth": dob or None,
+        "age":          age,
+        "gender":       gender,
+        "language":     language,
+        "patient_code": code,
+    }
+    if email: row["email"] = email
+    if city:  row["city"]  = city
+    if fhm:   row["family_head_mobile"] = fhm.lstrip("+")
+
+    result = supabase.table("patients").insert(row).execute()
+    if not result.data:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail="Insert failed")
+    return result.data[0]
+
+
 @app.get("/patients/{patient_id}")
 async def get_patient(patient_id: str):
     from database import supabase
@@ -911,96 +995,6 @@ async def trigger_followup_calls():
     return {"status": "Follow-up calls initiated"}
 
 
-# ── PATIENT LOOKUP & REGISTRATION ────────────────────────
-
-@app.get("/patients/lookup")
-async def lookup_patient(mobile: str):
-    """Look up patients by mobile number (with or without 91 prefix)."""
-    from database import supabase
-    # Normalise: strip leading + and spaces
-    m = mobile.strip().lstrip("+")
-    # Build candidate list: try as-is + with/without 91 prefix
-    candidates = {m}
-    if m.startswith("91") and len(m) > 10:
-        candidates.add(m[2:])      # strip country code
-    else:
-        candidates.add("91" + m)   # add country code
-    results = []
-    for candidate in candidates:
-        res = supabase.table("patients")\
-            .select("*")\
-            .or_(f"mobile.eq.{candidate},family_head_mobile.eq.{candidate}")\
-            .execute()
-        for p in (res.data or []):
-            if not any(r["id"] == p["id"] for r in results):
-                results.append(p)
-    return results
-
-
-@app.post("/patients/register")
-async def register_patient(request: Request):
-    """Register a new patient and generate patient_code."""
-    from database import supabase
-    body = await request.json()
-
-    name        = (body.get("name") or "").strip()
-    mobile_raw  = (body.get("mobile") or "").strip().lstrip("+")
-    dob         = body.get("date_of_birth") or ""   # YYYY-MM-DD expected
-    gender      = body.get("gender") or ""
-    language    = body.get("language") or ""
-    email       = body.get("email") or None
-    city        = body.get("city") or None
-    fhm         = body.get("family_head_mobile") or None
-    doctor_id   = body.get("doctor_id") or ""
-
-    # Generate patient_code: PREFIX-LAST4-YEAR
-    name_clean = name.replace(" ", "")
-    prefix = name_clean[:3].upper() if len(name_clean) >= 3 else name_clean.upper().ljust(3, "X")
-    suffix = mobile_raw[-4:] if len(mobile_raw) >= 4 else mobile_raw
-    year   = dob[:4] if len(dob) >= 4 else "0000"
-    base_code = f"{prefix}-{suffix}-{year}"
-
-    # Check clash, append -2, -3 …
-    existing = supabase.table("patients").select("patient_code")\
-        .like("patient_code", f"{base_code}%").execute()
-    existing_codes = {r["patient_code"] for r in (existing.data or [])}
-    code = base_code
-    counter = 2
-    while code in existing_codes:
-        code = f"{base_code}-{counter}"
-        counter += 1
-
-    # Calculate age from DOB
-    age = None
-    if dob:
-        try:
-            from datetime import date as _date
-            born = _date.fromisoformat(dob)
-            today = _date.today()
-            age = today.year - born.year - ((today.month, today.day) < (born.month, born.day))
-        except Exception:
-            pass
-
-    row = {
-        "doctor_id":           doctor_id,
-        "name":                name,
-        "mobile":              mobile_raw,
-        "date_of_birth":       dob or None,
-        "age":                 age,
-        "gender":              gender,
-        "language":            language,
-        "patient_code":        code,
-    }
-    if email:  row["email"] = email
-    if city:   row["city"]  = city
-    if fhm:    row["family_head_mobile"] = fhm.lstrip("+")
-
-    result = supabase.table("patients").insert(row).execute()
-    if not result.data:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=500, detail="Insert failed")
-    return result.data[0]
-
 
 # ── APPOINTMENT SLOTS ─────────────────────────────────────
 
@@ -1116,7 +1110,6 @@ async def book_appointment(request: Request):
         "appointment_time":  appt_time,
         "token_number":      token,
         "status":            "Confirmed",
-        "visit_type":        visit_type,
     }
     ins = supabase.table("appointments").insert(appt_row).execute()
     if not ins.data:
