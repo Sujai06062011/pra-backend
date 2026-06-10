@@ -909,3 +909,292 @@ async def trigger_followup_calls():
     from followup import make_followup_calls_job
     await make_followup_calls_job()
     return {"status": "Follow-up calls initiated"}
+
+
+# ── PATIENT LOOKUP & REGISTRATION ────────────────────────
+
+@app.get("/patients/lookup")
+async def lookup_patient(mobile: str):
+    """Look up patients by mobile number (with or without 91 prefix)."""
+    from database import supabase
+    # Normalise: strip leading + and spaces
+    m = mobile.strip().lstrip("+")
+    # Build candidate list: try as-is + with/without 91 prefix
+    candidates = {m}
+    if m.startswith("91") and len(m) > 10:
+        candidates.add(m[2:])      # strip country code
+    else:
+        candidates.add("91" + m)   # add country code
+    results = []
+    for candidate in candidates:
+        res = supabase.table("patients")\
+            .select("*")\
+            .or_(f"mobile.eq.{candidate},family_head_mobile.eq.{candidate}")\
+            .execute()
+        for p in (res.data or []):
+            if not any(r["id"] == p["id"] for r in results):
+                results.append(p)
+    return results
+
+
+@app.post("/patients/register")
+async def register_patient(request: Request):
+    """Register a new patient and generate patient_code."""
+    from database import supabase
+    body = await request.json()
+
+    name        = (body.get("name") or "").strip()
+    mobile_raw  = (body.get("mobile") or "").strip().lstrip("+")
+    dob         = body.get("date_of_birth") or ""   # YYYY-MM-DD expected
+    gender      = body.get("gender") or ""
+    language    = body.get("language") or ""
+    email       = body.get("email") or None
+    city        = body.get("city") or None
+    fhm         = body.get("family_head_mobile") or None
+    doctor_id   = body.get("doctor_id") or ""
+
+    # Generate patient_code: PREFIX-LAST4-YEAR
+    name_clean = name.replace(" ", "")
+    prefix = name_clean[:3].upper() if len(name_clean) >= 3 else name_clean.upper().ljust(3, "X")
+    suffix = mobile_raw[-4:] if len(mobile_raw) >= 4 else mobile_raw
+    year   = dob[:4] if len(dob) >= 4 else "0000"
+    base_code = f"{prefix}-{suffix}-{year}"
+
+    # Check clash, append -2, -3 …
+    existing = supabase.table("patients").select("patient_code")\
+        .like("patient_code", f"{base_code}%").execute()
+    existing_codes = {r["patient_code"] for r in (existing.data or [])}
+    code = base_code
+    counter = 2
+    while code in existing_codes:
+        code = f"{base_code}-{counter}"
+        counter += 1
+
+    # Calculate age from DOB
+    age = None
+    if dob:
+        try:
+            from datetime import date as _date
+            born = _date.fromisoformat(dob)
+            today = _date.today()
+            age = today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+        except Exception:
+            pass
+
+    row = {
+        "doctor_id":           doctor_id,
+        "name":                name,
+        "mobile":              mobile_raw,
+        "date_of_birth":       dob or None,
+        "age":                 age,
+        "gender":              gender,
+        "language":            language,
+        "patient_code":        code,
+    }
+    if email:  row["email"] = email
+    if city:   row["city"]  = city
+    if fhm:    row["family_head_mobile"] = fhm.lstrip("+")
+
+    result = supabase.table("patients").insert(row).execute()
+    if not result.data:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail="Insert failed")
+    return result.data[0]
+
+
+# ── APPOINTMENT SLOTS ─────────────────────────────────────
+
+@app.get("/appointments/slots")
+async def get_appointment_slots(doctor_id: str, date: str):
+    """Return time slots with booking counts for a given date."""
+    from database import supabase
+    from datetime import datetime, timedelta
+
+    # Load clinic config
+    cfg_res = supabase.table("clinic_config")\
+        .select("config_key,config_value")\
+        .eq("doctor_id", doctor_id)\
+        .in_("config_key", [
+            "clinic.slot_start_morning", "clinic.slot_end_morning",
+            "clinic.slot_start_evening", "clinic.slot_end_evening",
+            "clinic.slot_duration_minutes", "clinic.max_per_slot",
+        ]).execute()
+    cfg = {r["config_key"]: r["config_value"] for r in (cfg_res.data or [])}
+
+    start_m  = cfg.get("clinic.slot_start_morning",   "09:00")
+    end_m    = cfg.get("clinic.slot_end_morning",     "13:00")
+    start_e  = cfg.get("clinic.slot_start_evening",   "17:00")
+    end_e    = cfg.get("clinic.slot_end_evening",     "20:00")
+    dur      = int(cfg.get("clinic.slot_duration_minutes", "15"))
+    max_slot = int(cfg.get("clinic.max_per_slot",          "3"))
+
+    def parse_t(s):
+        h, m_ = map(int, s.split(":"))
+        return datetime(2000, 1, 1, h, m_)
+
+    def gen_slots(start_str, end_str):
+        slots = []
+        t = parse_t(start_str)
+        end = parse_t(end_str)
+        while t < end:
+            slots.append(t.strftime("%H:%M"))
+            t += timedelta(minutes=dur)
+        return slots
+
+    all_slots = gen_slots(start_m, end_m) + gen_slots(start_e, end_e)
+
+    # Count bookings for each slot
+    appts_res = supabase.table("appointments")\
+        .select("appointment_time")\
+        .eq("doctor_id", doctor_id)\
+        .eq("appointment_date", date)\
+        .eq("status", "Confirmed")\
+        .execute()
+    booked_counts: dict[str, int] = {}
+    for a in (appts_res.data or []):
+        t = (a.get("appointment_time") or "")[:5]
+        booked_counts[t] = booked_counts.get(t, 0) + 1
+
+    def display_time(t_str):
+        h, m_ = map(int, t_str.split(":"))
+        suffix = "AM" if h < 12 else "PM"
+        h12 = h if h <= 12 else h - 12
+        if h12 == 0: h12 = 12
+        return f"{h12}:{m_:02d} {suffix}"
+
+    return [
+        {
+            "time":         slot,
+            "display":      display_time(slot),
+            "booked_count": booked_counts.get(slot, 0),
+            "max":          max_slot,
+            "available":    True,  # always allow (soft limit)
+        }
+        for slot in all_slots
+    ]
+
+
+@app.get("/appointments/next-token")
+async def get_next_token(doctor_id: str, date: str):
+    """Return the next token number for a given date."""
+    from database import supabase
+    res = supabase.table("appointments")\
+        .select("token_number")\
+        .eq("doctor_id", doctor_id)\
+        .eq("appointment_date", date)\
+        .execute()
+    max_tok = max((r.get("token_number") or 0 for r in (res.data or [])), default=0)
+    return {"token": max_tok + 1}
+
+
+@app.post("/appointments/book")
+async def book_appointment(request: Request):
+    """Book an appointment, assign token, send WhatsApp confirmation."""
+    from database import supabase
+    import datetime as dt
+
+    body          = await request.json()
+    patient_id    = body["patient_id"]
+    doctor_id     = body["doctor_id"]
+    appt_date     = body["appointment_date"]
+    appt_time     = body.get("appointment_time") or ""
+    visit_type    = body.get("visit_type") or "New Visit"
+
+    # Next token
+    tok_res = supabase.table("appointments")\
+        .select("token_number")\
+        .eq("doctor_id", doctor_id)\
+        .eq("appointment_date", appt_date)\
+        .execute()
+    token = max((r.get("token_number") or 0 for r in (tok_res.data or [])), default=0) + 1
+
+    # Insert appointment
+    appt_row = {
+        "patient_id":        patient_id,
+        "doctor_id":         doctor_id,
+        "appointment_date":  appt_date,
+        "appointment_time":  appt_time,
+        "token_number":      token,
+        "status":            "Confirmed",
+        "visit_type":        visit_type,
+    }
+    ins = supabase.table("appointments").insert(appt_row).execute()
+    if not ins.data:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail="Appointment insert failed")
+    appt_id = ins.data[0]["id"]
+
+    # Get patient info
+    pat_res = supabase.table("patients").select("name,mobile,patient_code,language").eq("id", patient_id).single().execute()
+    patient = pat_res.data or {}
+    pat_name  = patient.get("name") or "Patient"
+    pat_code  = patient.get("patient_code") or ""
+    pat_mob   = patient.get("mobile") or ""
+    language  = (patient.get("language") or "English").lower()
+
+    # Format date nicely
+    try:
+        d = dt.date.fromisoformat(appt_date)
+        date_display = d.strftime("%d %b %Y")
+    except Exception:
+        date_display = appt_date
+
+    # Format time nicely
+    def fmt_time(t_str):
+        if not t_str: return t_str
+        try:
+            h, m_ = map(int, t_str[:5].split(":"))
+            suffix = "AM" if h < 12 else "PM"
+            h12 = h if h <= 12 else h - 12
+            if h12 == 0: h12 = 12
+            return f"{h12}:{m_:02d} {suffix}"
+        except Exception:
+            return t_str
+
+    time_display = fmt_time(appt_time)
+
+    if language == "tamil":
+        msg = (
+            f"✅ சந்திப்பு உறுதிப்படுத்தப்பட்டது!\n\n"
+            f"🏥 Dr. Kumar Child Care Clinic\n"
+            f"👤 {pat_name} ({pat_code})\n"
+            f"📅 {date_display}\n"
+            f"⏰ {time_display} | Token #{token}\n\n"
+            f"வரும்போது இந்த token number சொல்லுங்கள்.\n"
+            f"ரத்து செய்ய CANCEL என்று reply பண்ணுங்கள்.\n"
+            f"MENU — முகப்பு பக்கம்."
+        )
+    else:
+        msg = (
+            f"✅ Appointment Confirmed!\n\n"
+            f"🏥 Dr. Kumar Child Care Clinic\n"
+            f"👤 {pat_name} ({pat_code})\n"
+            f"📅 {date_display}\n"
+            f"⏰ {time_display} | Token #{token}\n\n"
+            f"Please mention your token number when you arrive.\n"
+            f"Reply CANCEL to cancel. Reply MENU for help."
+        )
+
+    # Send WhatsApp
+    wa_sent = False
+    if pat_mob:
+        try:
+            from scheduler import send_whatsapp as _wa
+            _wa(pat_mob, msg)
+            wa_sent = True
+        except Exception as e:
+            print(f"❌ WhatsApp booking confirmation failed: {e}")
+
+    # Upsert tokens row (ensure date exists)
+    supabase.table("tokens").upsert(
+        {"doctor_id": doctor_id, "appointment_date": appt_date, "current_token": 0},
+        on_conflict="doctor_id,appointment_date",
+        ignore_duplicates=True
+    ).execute()
+
+    return {
+        "appointment_id": appt_id,
+        "token_number":   token,
+        "patient_name":   pat_name,
+        "whatsapp_sent":  wa_sent,
+    }
