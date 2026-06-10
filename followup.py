@@ -624,11 +624,12 @@ async def handle_voice_followup_response(request: Request):
 
     response_map = {
         "1": "feeling_better",
-        "2": "needs_appointment"
+        "2": "needs_appointment",
+        "3": "still_recovering",
     }
     followup_response = response_map.get(digit, "no_response")
 
-    # Mark followup Completed + save response
+    # Mark followup Completed for all valid responses
     if followup_id:
         supabase.table("followups").update({
             "call_status": "Completed",
@@ -636,28 +637,27 @@ async def handle_voice_followup_response(request: Request):
             "response_notes": followup_response,
         }).eq("id", followup_id).execute()
 
-    # If patient needs appointment → look up patient via followup and send WhatsApp
+    # digit=2 only: send appointment booking WhatsApp
     if digit == "2" and followup_id:
         try:
             fu_result = supabase.table("followups").select(
-                "patients(name, mobile, language), doctor_id"
+                "patient_id, doctor_id, patients(name, mobile, language)"
             ).eq("id", followup_id).execute()
 
             if fu_result.data:
                 patient = (fu_result.data[0].get("patients") or {})
                 doctor_id = fu_result.data[0].get("doctor_id", "")
                 mobile = patient.get("mobile", "")
-                patient_name = patient.get("name", "")
+                patient_name = patient.get("name", "Patient")
                 patient_lang = patient.get("language", "english")
-                clinic_name = config_loader.clinic_name(doctor_id) if doctor_id else "Clinic"
 
                 if mobile:
                     if patient_lang == "tamil":
-                        booking_msg = "\u0bb5\u0ba3\u0b95\u0bcd\u0b95\u0bae\u0bcd " + patient_name + "!\n\n" + clinic_name + " appointment \u0baa\u0ba3\u0bcd\u0ba3:\n\n1 - Appointment Book \u0baa\u0ba3\u0bcd\u0ba3"
+                        booking_msg = f"வணக்கம் {patient_name}! மருத்துவர் உங்களுக்கு அப்பாயிண்ட்மெந்ட் புக் செய்ய சொன்னார். ‘1’ அனுப்புங்கள்."
                     elif patient_lang == "hindi":
-                        booking_msg = "\u0928\u092e\u0938\u094d\u0924\u0947 " + patient_name + "!\n\n" + clinic_name + " appointment \u0915\u0947 \u0932\u093f\u090f:\n\n1 - Appointment Book \u0915\u0930\u0947\u0902"
+                        booking_msg = f"नमस्ते {patient_name}! डॉक्टर ने अपॉइंटमेंट बुक करने को कहा है। ‘1’ भेजें।"
                     else:
-                        booking_msg = "Hello " + patient_name + "!\n\nLet us book your appointment at " + clinic_name + ".\n\nReply 1 to Book Appointment now."
+                        booking_msg = f"Hi {patient_name}! The doctor recommends a follow-up appointment. Reply ‘1’ to book."
 
                     twilio_client.messages.create(
                         from_=TWILIO_FROM,
@@ -665,18 +665,20 @@ async def handle_voice_followup_response(request: Request):
                         body=booking_msg
                     )
 
+                    # Reset conversation state so patient can reply '1' to book
                     supabase.rpc("upsert_conversation_state", {"p_mobile": mobile}).execute()
                     supabase.table("conversation_state").update({
                         "state": "idle",
                         "temp_data": {}
                     }).eq("mobile", mobile).execute()
 
-                    print(f"\u2705 Booking WhatsApp sent to {patient_name} ({mobile})")
+                    print(f"✅ Booking WhatsApp sent to {patient_name} ({mobile})")
 
         except Exception as e:
-            print(f"\u274c Error sending booking WhatsApp: {e}")
+            print(f"❌ Error sending booking WhatsApp: {e}")
+            import traceback; traceback.print_exc()
 
-    # Get cached Sarvam response audio
+    # Play cached Sarvam audio response
     valid_digits = ["1", "2"]
     if digit in valid_digits:
         audio_url = await get_or_generate_response_audio(digit, lang)
@@ -686,9 +688,8 @@ async def handle_voice_followup_response(request: Request):
     response = VoiceResponse()
     response.play(audio_url)
 
-    print(f"\u2705 Voice response: followup_id={followup_id}, lang={lang}, digit={digit}, response={followup_response}")
+    print(f"✅ Voice response: followup_id={followup_id}, lang={lang}, digit={digit}, response={followup_response}")
     return PlainTextResponse(str(response), media_type="application/xml")
-
 
 async def prewarm_response_audios():
     """
