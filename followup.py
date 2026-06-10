@@ -516,9 +516,9 @@ async def make_followup_call_from_followup(followup: dict):
             timeout=30
         )
 
+        # Mark as triggered — webhook will set 'Completed' if patient responds
         supabase.table("followups").update({
-            "call_status": "Completed",
-            "completed_at": datetime.now().isoformat()
+            "call_status": "Call-Triggered",
         }).eq("id", followup_id).execute()
 
         print(f"✅ Follow-up call initiated to {patient_name} ({mobile}): {call.sid}")
@@ -550,14 +550,14 @@ async def make_followup_calls_job():
 async def handle_voice_followup_webhook(request: Request):
     """Twilio Voice webhook — plays cached audio and captures keypress"""
     params = dict(request.query_params)
-    pres_id = params.get("pres_id", "")
+    followup_id = params.get("followup_id", "")
     audio_url = params.get("audio_url", "")
     lang = params.get("lang", "english")
 
     response = VoiceResponse()
     gather = Gather(
         num_digits=1,
-        action=f"{BASE_URL}/webhook/voice/followup-response?pres_id={pres_id}&lang={lang}",
+        action=f"{BASE_URL}/webhook/voice/followup-response?followup_id={followup_id}&lang={lang}",
         method="POST",
         timeout=10
     )
@@ -617,7 +617,7 @@ async def get_or_generate_response_audio(digit: str, language: str) -> str:
 async def handle_voice_followup_response(request: Request):
     """Handle patient keypress - plays Sarvam cached response audio"""
     params = dict(request.query_params)
-    pres_id = params.get("pres_id", "")
+    followup_id = params.get("followup_id", "")
     lang = params.get("lang", "english")
     form_data = await request.form()
     digit = form_data.get("Digits", "")
@@ -628,54 +628,53 @@ async def handle_voice_followup_response(request: Request):
     }
     followup_response = response_map.get(digit, "no_response")
 
-    # Save to DB
-    if pres_id:
-        supabase.table("prescriptions").update({
-            "followup_call_response": followup_response,
-            "followup_replied": True
-        }).eq("id", pres_id).execute()
+    # Mark followup Completed + save response
+    if followup_id:
+        supabase.table("followups").update({
+            "call_status": "Completed",
+            "completed_at": datetime.now().isoformat(),
+            "response_notes": followup_response,
+        }).eq("id", followup_id).execute()
 
-    # If patient needs appointment → send WhatsApp booking prompt
-    if digit == "2" and pres_id:
+    # If patient needs appointment → look up patient via followup and send WhatsApp
+    if digit == "2" and followup_id:
         try:
-            pres_result = supabase.table("prescriptions").select(
-                "patients(name, mobile, language), doctors(clinic_name)"
-            ).eq("id", pres_id).execute()
+            fu_result = supabase.table("followups").select(
+                "patients(name, mobile, language), doctor_id"
+            ).eq("id", followup_id).execute()
 
-            if pres_result.data:
-                patient = pres_result.data[0].get("patients", {})
-                doctor = pres_result.data[0].get("doctors", {})
+            if fu_result.data:
+                patient = (fu_result.data[0].get("patients") or {})
+                doctor_id = fu_result.data[0].get("doctor_id", "")
                 mobile = patient.get("mobile", "")
                 patient_name = patient.get("name", "")
                 patient_lang = patient.get("language", "english")
-                clinic_name = doctor.get("clinic_name", "Clinic")
+                clinic_name = config_loader.clinic_name(doctor_id) if doctor_id else "Clinic"
 
                 if mobile:
-                    # Build booking prompt based on language
                     if patient_lang == "tamil":
                         booking_msg = "\u0bb5\u0ba3\u0b95\u0bcd\u0b95\u0bae\u0bcd " + patient_name + "!\n\n" + clinic_name + " appointment \u0baa\u0ba3\u0bcd\u0ba3:\n\n1 - Appointment Book \u0baa\u0ba3\u0bcd\u0ba3"
                     elif patient_lang == "hindi":
                         booking_msg = "\u0928\u092e\u0938\u094d\u0924\u0947 " + patient_name + "!\n\n" + clinic_name + " appointment \u0915\u0947 \u0932\u093f\u090f:\n\n1 - Appointment Book \u0915\u0930\u0947\u0902"
                     else:
                         booking_msg = "Hello " + patient_name + "!\n\nLet us book your appointment at " + clinic_name + ".\n\nReply 1 to Book Appointment now."
-                    # Send WhatsApp
+
                     twilio_client.messages.create(
                         from_=TWILIO_FROM,
                         to=f"whatsapp:+{mobile}",
                         body=booking_msg
                     )
 
-                    # Reset conversation state to idle
                     supabase.rpc("upsert_conversation_state", {"p_mobile": mobile}).execute()
                     supabase.table("conversation_state").update({
                         "state": "idle",
                         "temp_data": {}
                     }).eq("mobile", mobile).execute()
 
-                    print(f"✅ Booking WhatsApp sent to {patient_name} ({mobile})")
+                    print(f"\u2705 Booking WhatsApp sent to {patient_name} ({mobile})")
 
         except Exception as e:
-            print(f"❌ Error sending booking WhatsApp: {e}")
+            print(f"\u274c Error sending booking WhatsApp: {e}")
 
     # Get cached Sarvam response audio
     valid_digits = ["1", "2"]
@@ -687,7 +686,7 @@ async def handle_voice_followup_response(request: Request):
     response = VoiceResponse()
     response.play(audio_url)
 
-    print(f"✅ Voice response: pres_id={pres_id}, lang={lang}, digit={digit}, response={followup_response}")
+    print(f"\u2705 Voice response: followup_id={followup_id}, lang={lang}, digit={digit}, response={followup_response}")
     return PlainTextResponse(str(response), media_type="application/xml")
 
 
