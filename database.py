@@ -185,9 +185,10 @@ def get_upcoming_appointments(patient_id: str, doctor_id: str):
 
 def get_family_upcoming_appointments(mobile: str, doctor_id: str):
     """
-    Get all upcoming confirmed appointments for every patient linked to this mobile
-    (own record + family members sharing the same mobile as family_head_mobile).
-    Returns list of appointment dicts with an extra 'patient_name' key, sorted by date/token.
+    Get cancellable appointments for every patient linked to this mobile.
+    - Today: only Waiting (token > in_progress). Done/In Progress are already seen.
+    - Future dates: all Confirmed appointments.
+    Returns list with 'patient_name' key, sorted by date/token.
     """
     from datetime import date
     today = date.today().isoformat()
@@ -207,8 +208,18 @@ def get_family_upcoming_appointments(mobile: str, doctor_id: str):
         "token_number"
     ).limit(10).execute()
 
+    # Get current in_progress token to filter out today's Done/In Progress
+    token_row = supabase.table("tokens").select("current_token").eq(
+        "doctor_id", doctor_id).eq("queue_date", today).execute()
+    in_progress = (token_row.data[0]["current_token"] + 1) if token_row.data else 0
+
     appts = []
     for a in (result.data or []):
+        # For today: skip if token is already Done or In Progress
+        if a["appointment_date"] == today:
+            t = a.get("token_number") or 0
+            if t <= in_progress:
+                continue
         a["patient_name"] = all_patients.get(a["patient_id"], "Patient")
         appts.append(a)
     return appts
