@@ -638,6 +638,20 @@ async def get_patient(patient_id: str):
     return result.data
 
 
+@app.patch("/patients/{patient_id}")
+async def update_patient(patient_id: str, request: Request):
+    from database import supabase
+    import datetime as dt
+    body = await request.json()
+    # Only update columns that actually exist in the schema
+    allowed = {"name", "mobile", "age", "gender", "language", "date_of_birth",
+               "email", "address", "family_head_mobile"}
+    update_data = {k: v for k, v in body.items() if k in allowed and v is not None}
+    update_data["updated_at"] = dt.datetime.utcnow().isoformat()
+    result = supabase.table("patients").update(update_data).eq("id", patient_id).execute()
+    return result.data[0] if result.data else {}
+
+
 @app.get("/patients/{patient_id}/visits")
 async def get_patient_visits(patient_id: str):
     from database import supabase
