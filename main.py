@@ -577,7 +577,58 @@ async def register_patient(request: Request):
     result = supabase.table("patients").insert(row).execute()
     if not result.data:
         raise HTTPException(status_code=500, detail="Insert failed")
-    return result.data[0]
+    patient = result.data[0]
+
+    # Send WhatsApp welcome message
+    is_family = bool(fhm)
+    lang = language.lower()
+    pat_name = patient.get("name") or name
+    pat_code = patient.get("patient_code") or code
+
+    if lang == "tamil":
+        if is_family:
+            msg = (
+                f"👋 வணக்கம் {pat_name}!\n\n"
+                f"🏥 Dr. Kumar Child Care Clinic-ல் நீங்கள் பதிவு செய்யப்பட்டீர்கள்.\n"
+                f"🪪 உங்கள் Patient ID: *{pat_code}*\n\n"
+                f"சந்திப்பு பதிவு செய்ய MENU என்று reply பண்ணுங்கள்."
+            )
+        else:
+            msg = (
+                f"👋 வணக்கம் {pat_name}!\n\n"
+                f"🏥 Dr. Kumar Child Care Clinic-ல் உங்களை வரவேற்கிறோம்.\n"
+                f"🪪 உங்கள் Patient ID: *{pat_code}*\n\n"
+                f"இந்த ID-ஐ ஒவ்வொரு வருகையிலும் பயன்படுத்துங்கள்.\n"
+                f"சந்திப்பு பதிவு செய்ய MENU என்று reply பண்ணுங்கள்."
+            )
+    else:
+        if is_family:
+            msg = (
+                f"👋 Hello {pat_name}!\n\n"
+                f"🏥 You have been registered at Dr. Kumar Child Care Clinic.\n"
+                f"🪪 Your Patient ID: *{pat_code}*\n\n"
+                f"Reply MENU to book an appointment."
+            )
+        else:
+            msg = (
+                f"👋 Welcome to Dr. Kumar Child Care Clinic, {pat_name}!\n\n"
+                f"🪪 Your Patient ID: *{pat_code}*\n\n"
+                f"Please save this ID — you'll need it at every visit.\n"
+                f"Reply MENU to book an appointment."
+            )
+
+    wa_sent = False
+    send_to = mobile_raw or (fhm.lstrip("+") if fhm else "")
+    if send_to:
+        try:
+            from scheduler import send_whatsapp as _wa
+            _wa(send_to, msg)
+            wa_sent = True
+        except Exception as e:
+            print(f"❌ WhatsApp welcome failed: {e}")
+
+    patient["whatsapp_sent"] = wa_sent
+    return patient
 
 
 @app.get("/patients/{patient_id}")
