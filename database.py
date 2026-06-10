@@ -172,7 +172,7 @@ def create_appointment(patient_id: str, doctor_id: str, date_str: str,
 
 
 def get_upcoming_appointments(patient_id: str, doctor_id: str):
-    """Get patient's upcoming appointments"""
+    """Get upcoming appointments for a single patient (legacy)"""
     from datetime import date
     today = date.today().isoformat()
     result = supabase.table("appointments").select(
@@ -181,6 +181,37 @@ def get_upcoming_appointments(patient_id: str, doctor_id: str):
         "status", "Confirmed"
     ).gte("appointment_date", today).order("appointment_date").limit(5).execute()
     return result.data
+
+
+def get_family_upcoming_appointments(mobile: str, doctor_id: str):
+    """
+    Get all upcoming confirmed appointments for every patient linked to this mobile
+    (own record + family members sharing the same mobile as family_head_mobile).
+    Returns list of appointment dicts with an extra 'patient_name' key, sorted by date/token.
+    """
+    from datetime import date
+    today = date.today().isoformat()
+
+    own    = supabase.table("patients").select("id, name").eq("mobile", mobile).execute()
+    family = supabase.table("patients").select("id, name").eq("family_head_mobile", mobile).execute()
+    all_patients = {p["id"]: p["name"] for p in (own.data or []) + (family.data or [])}
+
+    if not all_patients:
+        return []
+
+    result = supabase.table("appointments").select(
+        "id, patient_id, appointment_date, appointment_time, token_number, status"
+    ).eq("doctor_id", doctor_id).eq("status", "Confirmed").gte(
+        "appointment_date", today
+    ).in_("patient_id", list(all_patients.keys())).order("appointment_date").order(
+        "token_number"
+    ).limit(10).execute()
+
+    appts = []
+    for a in (result.data or []):
+        a["patient_name"] = all_patients.get(a["patient_id"], "Patient")
+        appts.append(a)
+    return appts
 
 
 def cancel_appointment(appointment_id: str):

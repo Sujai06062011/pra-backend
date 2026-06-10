@@ -4,7 +4,7 @@ from database import (
     get_doctor_by_whatsapp, get_patient_by_mobile, get_conversation_state,
     save_conversation_state, get_queue_status, get_patient_token_today, get_family_tokens_today,
     check_holiday, get_booked_slots, get_next_token, create_appointment,
-    get_upcoming_appointments, cancel_appointment, create_patient,
+    get_upcoming_appointments, get_family_upcoming_appointments, cancel_appointment, create_patient,
 )
 from database import supabase as _supa
 
@@ -605,7 +605,7 @@ async def handle_message(from_number: str, text: str, to_number: str, media_url:
 
     # ── CANCEL APPOINTMENT ────────────────────────────────────
     elif intent == "cancel":
-        appointments = get_upcoming_appointments(patient_id, doctor_id)
+        appointments = get_family_upcoming_appointments(from_number, doctor_id)
         if not appointments:
             reply     = "You have no upcoming appointments to cancel.\n\nReply 1 to book an appointment."
             new_state = "idle"
@@ -616,8 +616,10 @@ async def handle_message(from_number: str, text: str, to_number: str, media_url:
                     apt["appointment_date"], "%Y-%m-%d"
                 ).strftime("%d %B %Y")
                 apt_time = format_time(apt["appointment_time"][:5])
-                token    = apt["token_number"]
-                apt_list += f"{i}. {apt_date} at {apt_time} (Token #{token})\n"
+                token    = apt.get("token_number")
+                name     = apt.get("patient_name", "")
+                token_str = f" (Token #{token})" if token else ""
+                apt_list += f"{i}. {name} — {apt_date} at {apt_time}{token_str}\n"
             apt_list += "\nReply with number to cancel. Reply 0 to go back."
             reply     = apt_list
             new_state = "awaiting_cancel_choice"
