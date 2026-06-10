@@ -557,23 +557,36 @@ async def register_patient(request: Request):
         except Exception:
             pass
 
+    # Core columns known to exist
     row = {
         "doctor_id":    doctor_id,
         "name":         name,
         "mobile":       mobile_raw,
-        "date_of_birth": dob or None,
         "age":          age,
         "gender":       gender,
         "language":     language,
         "patient_code": code,
     }
-    if email: row["email"] = email
-    if city:  row["city"]  = city
-    if fhm:   row["family_head_mobile"] = fhm.lstrip("+")
+    if fhm: row["family_head_mobile"] = fhm.lstrip("+")
 
-    result = supabase.table("patients").insert(row).execute()
+    # Try with optional columns first, fall back without them if schema error
+    optional_keys = []
+    if dob:   row["date_of_birth"] = dob;   optional_keys.append("date_of_birth")
+
+    from fastapi import HTTPException
+    try:
+        result = supabase.table("patients").insert(row).execute()
+    except Exception as e:
+        err_msg = str(e)
+        # If a column doesn't exist, retry without it
+        if "PGRST204" in err_msg or "could not find" in err_msg.lower():
+            for k in optional_keys:
+                row.pop(k, None)
+            result = supabase.table("patients").insert(row).execute()
+        else:
+            raise HTTPException(status_code=500, detail=err_msg)
+
     if not result.data:
-        from fastapi import HTTPException
         raise HTTPException(status_code=500, detail="Insert failed")
     return result.data[0]
 
