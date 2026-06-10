@@ -538,9 +538,9 @@ async def register_patient(request: Request):
     year   = dob[:4] if len(dob) >= 4 else "0000"
     base_code = f"{prefix}-{suffix}-{year}"
 
-    existing = supabase.table("patients").select("patient_code")\
-        .like("patient_code", f"{base_code}%").execute()
-    existing_codes = {r["patient_code"] for r in (existing.data or [])}
+    # Fetch all codes and filter in Python (.like() triggers Cloudflare 1101 on this deployment)
+    existing = supabase.table("patients").select("patient_code").execute()
+    existing_codes = {r["patient_code"] for r in (existing.data or []) if (r.get("patient_code") or "").startswith(base_code)}
     code = base_code
     counter = 2
     while code in existing_codes:
@@ -1177,13 +1177,6 @@ async def book_appointment(request: Request):
             wa_sent = True
         except Exception as e:
             print(f"❌ WhatsApp booking confirmation failed: {e}")
-
-    # Upsert tokens row (ensure date exists)
-    supabase.table("tokens").upsert(
-        {"doctor_id": doctor_id, "appointment_date": appt_date, "current_token": 0},
-        on_conflict="doctor_id,appointment_date",
-        ignore_duplicates=True
-    ).execute()
 
     return {
         "appointment_id": appt_id,
