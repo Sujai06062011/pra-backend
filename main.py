@@ -808,7 +808,16 @@ async def get_prescription_detail(prescription_id: str):
     ).eq("id", prescription_id).execute()
     if not result.data:
         return {}
-    return result.data[0]
+    row = _decode_walkin(result.data[0])
+    # For walk-in: inject complaint/diagnosis as a synthetic visits object so frontend can load them
+    if not row.get("patient_id") and not row.get("visits") and row.get("walkin_complaint"):
+        row["visits"] = {
+            "id": None,
+            "chief_complaint": row.get("walkin_complaint", ""),
+            "diagnosis":       row.get("walkin_diagnosis", ""),
+            "notes":           row.get("general_notes", ""),
+        }
+    return row
 
 
 @app.put("/prescriptions/{prescription_id}")
@@ -937,6 +946,24 @@ async def active_prescriptions(doctor_id: str):
     return result.data or []
 
 
+def _decode_walkin(row: dict) -> dict:
+    """If general_notes has a WALKIN:: prefix, decode and inject walkin fields."""
+    import json as _json, re as _re
+    notes = row.get("general_notes") or ""
+    m = _re.match(r"^WALKIN::(.+?)::END\n?(.*)", notes, _re.DOTALL)
+    if m:
+        try:
+            meta = _json.loads(m.group(1))
+            row["walkin_name"] = meta.get("name") or ""
+            row["walkin_age"]  = meta.get("age")
+            row["walkin_complaint"] = meta.get("complaint") or ""
+            row["walkin_diagnosis"] = meta.get("diagnosis") or ""
+            row["general_notes"] = m.group(2)  # strip prefix from notes
+        except Exception:
+            pass
+    return row
+
+
 @app.get("/prescriptions")
 async def list_prescriptions(doctor_id: str, patient_id: str = ""):
     from database import supabase
@@ -944,7 +971,7 @@ async def list_prescriptions(doctor_id: str, patient_id: str = ""):
     if patient_id:
         q = q.eq("patient_id", patient_id)
     result = q.order("created_at", desc=True).execute()
-    return result.data or []
+    return [_decode_walkin(r) for r in (result.data or [])]
 
 
 @app.post("/prescriptions")
@@ -971,6 +998,14 @@ async def create_prescription_v2(request: Request):
     now_ist = dt.datetime.now(IST)
     today_str = now_ist.date().isoformat()
 
+    import json as _json
+    diagnosis = body.get("diagnosis", "")
+
+    # For walk-in: encode name/age/complaint/diagnosis into general_notes since no patient row
+    if is_walkin:
+        meta = _json.dumps({"__walkin": True, "name": walkin_name or "", "age": walkin_age, "complaint": chief_complaint, "diagnosis": diagnosis}, ensure_ascii=False)
+        notes = f"WALKIN::{meta}::END\n{notes}" if notes else f"WALKIN::{meta}::END"
+
     # Auto-create visit if patient linked and no visit provided
     visit_id = visit_id_req
     if patient_id and not visit_id:
@@ -979,6 +1014,7 @@ async def create_prescription_v2(request: Request):
             "doctor_id":       doctor_id_req,
             "appointment_id":  appointment_id,
             "chief_complaint": chief_complaint,
+            "diagnosis":       diagnosis,
             "visit_status":    "Completed",
             "visit_date":      today_str,
             "created_at":      now_ist.isoformat(),
