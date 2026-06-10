@@ -634,36 +634,30 @@ async def register_patient(request: Request):
 @app.get("/patients/search")
 async def search_patient_by_mobile(mobile: str):
     from database import supabase
-    # Normalize: strip + and leading 91
     normalized = mobile.lstrip("+")
     if normalized.startswith("91") and len(normalized) == 12:
         normalized = normalized[2:]
     with_prefix = "91" + normalized
 
-    all_patients = supabase.table("patients").select("id, name, age, mobile, patient_code").execute()
-    patients = all_patients.data or []
-
-    match = None
-    for p in patients:
+    all_patients = supabase.table("patients").select("id, name, age, mobile, patient_code, gender").execute()
+    matches = []
+    for p in (all_patients.data or []):
         pm = (p.get("mobile") or "").lstrip("+")
-        if pm.startswith("91") and len(pm) == 12:
-            pm_short = pm[2:]
-        else:
-            pm_short = pm
+        pm_short = pm[2:] if (pm.startswith("91") and len(pm) == 12) else pm
         if pm_short == normalized or pm == with_prefix or pm == normalized:
-            match = p
-            break
+            matches.append({
+                "patient_id": p["id"],
+                "name": p["name"],
+                "age": p.get("age"),
+                "gender": p.get("gender"),
+                "mobile": p["mobile"],
+                "patient_code": p.get("patient_code"),
+                "last_visit_date": None,
+            })
 
-    if not match:
+    if not matches:
         raise HTTPException(status_code=404, detail="Patient not found")
-
-    return {
-        "patient_id": match["id"],
-        "name": match["name"],
-        "age": match.get("age"),
-        "mobile": match["mobile"],
-        "last_visit_date": None,
-    }
+    return matches
 
 
 @app.get("/patients/{patient_id}")
