@@ -61,8 +61,8 @@ def get_active_medicines_by_patient(reminder_type: str = "morning"):
     patients_medicines = {}
 
     for pres in prescriptions:
-        patient = pres.get("patients", {})
-        doctor = pres.get("doctors", {})
+        patient = pres.get("patients") or {}
+        doctor = pres.get("doctors") or {}
         medicines = pres.get("prescription_medicines", [])
         mobile = patient.get("mobile", "")
         patient_name = patient.get("name", "")
