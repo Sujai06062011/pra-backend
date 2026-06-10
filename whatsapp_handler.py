@@ -2,7 +2,7 @@ from datetime import datetime, date
 import re
 from database import (
     get_doctor_by_whatsapp, get_patient_by_mobile, get_conversation_state,
-    save_conversation_state, get_queue_status, get_patient_token_today,
+    save_conversation_state, get_queue_status, get_patient_token_today, get_family_tokens_today,
     check_holiday, get_booked_slots, get_next_token, create_appointment,
     get_upcoming_appointments, cancel_appointment, create_patient,
 )
@@ -557,29 +557,41 @@ async def handle_message(from_number: str, text: str, to_number: str, media_url:
     elif intent == "queue":
         queue = get_queue_status(doctor_id)
         if queue:
-            current = queue["current_token"]
-            total   = queue["total_tokens"]
-            avg     = queue.get("avg_minutes_per_patient", 10)
-            patient_token_data = get_patient_token_today(patient_id, doctor_id) if patient_id else None
+            last_done       = queue["current_token"]        # last token marked Done
+            in_progress     = last_done + 1                 # token currently being served
+            total           = queue["total_tokens"]
+            avg             = queue.get("avg_minutes_per_patient", 10)
 
-            if patient_token_data:
-                my_token = patient_token_data["token_number"]
-                if my_token <= current:
-                    wait_msg = "Your turn may have passed. Please check with reception."
+            family_tokens = get_family_tokens_today(from_number, doctor_id, in_progress)
+            waiting = [t for t in family_tokens if t["queue_status"] == "Waiting"]
+
+            if family_tokens:
+                if waiting:
+                    token_lines = "\n".join(
+                        f"  #{t['token_number']} - {t['name']} (Waiting)"
+                        for t in waiting
+                    )
+                    # Estimate wait based on first waiting token
+                    first_wait = waiting[0]["token_number"] - in_progress
+                    wait_mins  = first_wait * avg
+                    reply = (
+                        f"{clinic_name} - Live Queue 🏥\n\n"
+                        f"Now Serving: #{in_progress}\n\n"
+                        f"Your tokens today:\n{token_lines}\n\n"
+                        f"Est. Wait: ~{wait_mins} mins"
+                        + MENU_HINT
+                    )
                 else:
-                    wait    = (my_token - current) * avg
-                    wait_msg = f"Est. Wait: ~{wait} mins"
-                reply = (
-                    f"{clinic_name} - Live Queue 🏥\n\n"
-                    f"Current Token: {current}\n"
-                    f"Your Token: #{my_token}\n"
-                    f"{wait_msg}"
-                    + MENU_HINT
-                )
+                    reply = (
+                        f"{clinic_name} - Live Queue 🏥\n\n"
+                        f"Now Serving: #{in_progress}\n\n"
+                        f"All your appointments for today are completed."
+                        + MENU_HINT
+                    )
             else:
                 reply = (
                     f"{clinic_name} - Live Queue 🏥\n\n"
-                    f"Current Token: {current}\n"
+                    f"Now Serving: #{in_progress}\n"
                     f"Total Today: {total}\n\n"
                     f"You do not have an appointment today.\n"
                     f"Reply 1 to book an appointment."

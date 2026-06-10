@@ -69,7 +69,7 @@ def get_queue_status(doctor_id: str):
 
 
 def get_patient_token_today(patient_id: str, doctor_id: str):
-    """Get patient's token number for today"""
+    """Get patient's token number for today (single patient, legacy)"""
     from datetime import date
     today = date.today().isoformat()
     result = supabase.table("appointments").select(
@@ -78,6 +78,49 @@ def get_patient_token_today(patient_id: str, doctor_id: str):
         "appointment_date", today
     ).eq("status", "Confirmed").execute()
     return result.data[0] if result.data else None
+
+
+def get_family_tokens_today(mobile: str, doctor_id: str, in_progress_token: int):
+    """
+    Get all appointment tokens today for all patients sharing a mobile number.
+    Returns list of {token_number, name, queue_status} sorted by token_number.
+    queue_status: 'Waiting' | 'In Progress' | 'Done'
+    """
+    from datetime import date
+    today = date.today().isoformat()
+
+    # Find all patient IDs linked to this mobile (self + family members)
+    own = supabase.table("patients").select("id, name").eq("mobile", mobile).execute()
+    family = supabase.table("patients").select("id, name").eq("family_head_mobile", mobile).execute()
+    all_patients = {p["id"]: p["name"] for p in (own.data or []) + (family.data or [])}
+
+    if not all_patients:
+        return []
+
+    # Fetch today's confirmed appointments for all those patients
+    appts = supabase.table("appointments").select(
+        "patient_id, token_number"
+    ).eq("doctor_id", doctor_id).eq("appointment_date", today).eq(
+        "status", "Confirmed"
+    ).in_("patient_id", list(all_patients.keys())).order("token_number").execute()
+
+    tokens = []
+    for a in (appts.data or []):
+        t = a["token_number"]
+        if t is None:
+            continue
+        if t < in_progress_token:
+            status = "Done"
+        elif t == in_progress_token:
+            status = "In Progress"
+        else:
+            status = "Waiting"
+        tokens.append({
+            "token_number": t,
+            "name": all_patients.get(a["patient_id"], "Patient"),
+            "queue_status": status,
+        })
+    return tokens
 
 
 def check_holiday(doctor_id: str, date_str: str):
